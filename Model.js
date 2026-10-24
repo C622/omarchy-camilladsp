@@ -1,0 +1,226 @@
+.pragma library
+
+// Pure helpers for Panel.qml, kept apart so they can be tested with node.
+
+var SINK = "camilladsp"
+var CALIBRATED = "80-calibrated"
+
+function parse(text) {
+  try {
+    var value = JSON.parse(String(text || "").trim())
+    return value && typeof value === "object" ? value : null
+  } catch (e) {
+    return null
+  }
+}
+
+function rateLabel(hz) {
+  var value = Number(hz)
+  if (!isFinite(value) || value <= 0) return ""
+  var khz = Math.round(value / 100) / 10
+  return (khz % 1 === 0 ? khz.toFixed(0) : khz.toFixed(1)) + " kHz"
+}
+
+function loadLabel(percent) {
+  var value = Number(percent)
+  if (!isFinite(value)) return ""
+  return (value < 10 ? value.toFixed(1) : value.toFixed(0)) + "% load"
+}
+
+function state(status, routedLive) {
+  if (!status) return "loading"
+  if (!status.installed || !status.pipewire || !status.setup) return "setup"
+  if (status.service === "failed") return "failed"
+  if (status.service !== "active") return "off"
+  return routedLive ? "on" : "bypassed"
+}
+
+function presetTitle(status, id) {
+  var presets = (status && status.presets) || []
+  for (var i = 0; i < presets.length; i++) {
+    if (presets[i].id === id) return presets[i].title
+  }
+  return id || ""
+}
+
+function heroStatus(status, routedLive) {
+  switch (state(status, routedLive)) {
+  case "loading": return ""
+  case "setup":
+    if (status.installed && !status.pipewire) return "Needs the PipeWire backend"
+    return "Not set up"
+  case "failed": return "Stopped with an error"
+  case "off": return "Off"
+  case "bypassed": return "Bypassed"
+  }
+  var parts = ["On"]
+  var dsp = status.dsp || {}
+  var rate = rateLabel(dsp.GetCaptureRate)
+  if (rate) parts.push(rate)
+  var load = loadLabel(dsp.GetProcessingLoad)
+  if (load) parts.push(load)
+  return parts.join(" · ")
+}
+
+function outputLabel(status) {
+  if (!status) return ""
+  return status.targetDescription || status.target || ""
+}
+
+function bypassReason(status) {
+  if (!status || !status.defaultSink || status.defaultSink === SINK) return ""
+  return "Audio goes straight to " + status.defaultSink + ". Turn on again to route it through CamillaDSP."
+}
+
+function clipped(status) {
+  var dsp = status && status.dsp
+  var value = dsp ? Number(dsp.GetClippedSamples) : 0
+  return isFinite(value) ? value : 0
+}
+
+function tooltip(status, routedLive) {
+  var s = state(status, routedLive)
+  if (s === "on") return "CamillaDSP: " + presetTitle(status, status.preset)
+  if (s === "setup") return "CamillaDSP: not set up"
+  return "CamillaDSP: " + heroStatus(status, routedLive).toLowerCase()
+}
+
+// ---------- Calibration ----------
+
+function usableMics(devices) {
+  var mics = (devices && devices.mics) || []
+  var out = []
+  for (var i = 0; i < mics.length; i++) {
+    var m = mics[i]
+    var label = m.description || m.name
+    if (!m.usable) label += " (" + m.reason + ")"
+    else if (m.muted) label += " (muted)"
+    else if (m.builtin) label += " (built in)"
+    out.push({ value: m.name, label: label, usable: m.usable && !m.muted })
+  }
+  return out
+}
+
+function micInfo(devices, name) {
+  var mics = (devices && devices.mics) || []
+  for (var i = 0; i < mics.length; i++) {
+    if (mics[i].name === name) return mics[i]
+  }
+  return null
+}
+
+// "None" first, then every calibration file found in Downloads or the
+// plugin's mic-calibration folder.
+function calibrationOptions(devices) {
+  var files = (devices && devices.calibration_files) || []
+  var out = [{ value: "", label: "None" }]
+  for (var i = 0; i < files.length; i++) out.push({ value: files[i].path, label: files[i].label })
+  return out
+}
+
+function isMeasurementMic(mic) {
+  return !!mic && /umik|ecm8000|emm-6|mm-1|xlr-?usb|dayton|minidsp/i.test(mic.name + " " + (mic.description || ""))
+}
+
+function calibrationHint(mic, options) {
+  if (!mic) return ""
+  if (mic.calibration) {
+    // miniDSP ships two files: 0 degrees for a microphone aimed at the
+    // speakers, 90 degrees for one pointed at the ceiling.
+    if (/90/.test(mic.calibration.file)) return "Using the 90° file: point the microphone at the ceiling."
+    if (mic.calibration.serial) return "Using the 0° file: point the microphone at the speakers."
+    return ""
+  }
+  if (isMeasurementMic(mic) && options.length <= 1) {
+    return "Download the calibration file for this microphone's serial number (miniDSP has them on its site) into Downloads, and pick it here."
+  }
+  return ""
+}
+
+// One line of the calibrator's output: progress, result, or error.
+function event(line) {
+  var value = parse(line)
+  return value && value.event ? value : null
+}
+
+function db(value) {
+  var n = Number(value)
+  return isFinite(n) ? n.toFixed(1) + " dB" : "—"
+}
+
+function fitSummary(fit) {
+  if (!fit || !fit.channels || fit.channels.length === 0) return ""
+  var before = 0, after = 0
+  for (var i = 0; i < fit.channels.length; i++) {
+    before += Number(fit.channels[i].error_before) || 0
+    after += Number(fit.channels[i].error_after) || 0
+  }
+  before /= fit.channels.length
+  after /= fit.channels.length
+  var filters = 0
+  for (var j = 0; j < fit.channels.length; j++) filters += (fit.channels[j].filters || []).length
+  var kind = fit.mode === "fir" ? "FIR" : filters + " filters"
+  return "Off target by " + db(before) + " before, " + db(after) + " planned (" + kind + ")"
+}
+
+function checkSummary(check) {
+  if (!check || !check.channels || check.channels.length === 0) return ""
+  var after = 0, deviation = 0
+  for (var i = 0; i < check.channels.length; i++) {
+    after += Number(check.channels[i].error_after) || 0
+    deviation += Number(check.channels[i].plan_deviation) || 0
+  }
+  after /= check.channels.length
+  deviation /= check.channels.length
+  var verdict = deviation < 1 ? "matches the plan" : (deviation < 2 ? "close to the plan" : "off the plan, measure again")
+  return "Checked: " + db(after) + " off target, " + verdict
+}
+
+// ---------- Response graph ----------
+
+// Map a curve on a log-frequency grid into a width x height box, with dbRange
+// dB above and below the middle. Returns [{x, y}].
+function curvePoints(grid, values, width, height, dbRange) {
+  var out = []
+  if (!grid || !values || grid.length < 2 || width <= 0 || height <= 0) return out
+  var lo = Math.log(grid[0])
+  var span = Math.log(grid[grid.length - 1]) - lo
+  var range = dbRange || 15
+  var n = Math.min(grid.length, values.length)
+  for (var i = 0; i < n; i++) {
+    var v = Math.max(-range, Math.min(range, Number(values[i]) || 0))
+    out.push({
+      x: (Math.log(grid[i]) - lo) / span * width,
+      y: height / 2 - v / range * height / 2
+    })
+  }
+  return out
+}
+
+function frequencyX(grid, hz, width) {
+  if (!grid || grid.length < 2) return 0
+  var lo = Math.log(grid[0])
+  return (Math.log(hz) - lo) / (Math.log(grid[grid.length - 1]) - lo) * width
+}
+
+// Average the channels into one curve for the graph.
+function meanCurve(curves) {
+  if (!curves || curves.length === 0) return []
+  var out = []
+  for (var i = 0; i < curves[0].length; i++) {
+    var sum = 0
+    for (var c = 0; c < curves.length; c++) sum += Number(curves[c][i]) || 0
+    out.push(sum / curves.length)
+  }
+  return out
+}
+
+if (typeof module !== "undefined") {
+  module.exports = {
+    parse: parse, rateLabel: rateLabel, loadLabel: loadLabel, state: state, presetTitle: presetTitle,
+    heroStatus: heroStatus, outputLabel: outputLabel, bypassReason: bypassReason, clipped: clipped,
+    tooltip: tooltip, usableMics: usableMics, micInfo: micInfo, calibrationOptions: calibrationOptions,
+    isMeasurementMic: isMeasurementMic, calibrationHint: calibrationHint, event: event, fitSummary: fitSummary,
+    checkSummary: checkSummary, curvePoints: curvePoints, frequencyX: frequencyX, meanCurve: meanCurve
+  }
+}

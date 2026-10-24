@@ -1,0 +1,10 @@
+#!/bin/bash
+
+# Run every test: the calibrator's DSP against a simulated speaker and room,
+# and the panel's pure helpers. Needs python3 with numpy and scipy, and node.
+
+set -euo pipefail
+
+cd "$(dirname -- "${BASH_SOURCE[0]}")/.."
+"${CAMILLADSP_PYTHON:-python3}" -m unittest discover -s test
+node test/model.test.js

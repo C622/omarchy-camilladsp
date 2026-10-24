@@ -1,0 +1,17 @@
+title: Treble lift
+description: +4 dB high shelf at 6 kHz, for dull speakers or headphones.
+filters:
+  preamp:
+    type: Gain
+    parameters:
+      gain: -4.0
+  treble:
+    type: Biquad
+    parameters:
+      type: Highshelf
+      freq: 6000
+      gain: 4.0
+      slope: 6
+pipeline:
+  - type: Filter
+    names: [preamp, treble]

@@ -1,0 +1,587 @@
+#!/usr/bin/python3 -I
+
+"""Measure the speakers with a microphone and build a CamillaDSP preset.
+
+  calibrate devices                       outputs and microphones, as JSON
+  calibrate measure --output O --mic M [--position nearfield|listening]
+  calibrate fit [--target flat|warm|room|FILE] [--mode peq|fir] [--align auto|on|off]
+  calibrate check                         replay through CamillaDSP and compare
+  calibrate mic-cal --mic M (--file F | --clear)
+                                          use a calibration file for a microphone
+  calibrate summary                       the session so far, as JSON
+  calibrate reset                         forget the measurements
+
+measure and check print one JSON object per line: {"event": "progress", ...}
+while they run, then {"event": "result", ...} or {"event": "error", ...}.
+Every measurement in a session is one microphone position; fit averages them.
+"""
+
+import argparse
+import datetime
+import json
+import os
+import shutil
+import signal as os_signal
+import subprocess
+import sys
+import re
+import tempfile
+import time
+import warnings
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+
+import numpy as np  # noqa: E402
+from scipy.io import wavfile  # noqa: E402
+
+import calibration_dsp as dsp  # noqa: E402
+
+STATE = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "omarchy-camilladsp")
+CONFIG = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "camilladsp")
+SESSION = os.path.join(STATE, "calibration")
+PRESET_ID = "80-calibrated"
+PRESET = os.path.join(CONFIG, "presets", PRESET_ID + ".yml")
+FILTERS = os.path.join(CONFIG, "filters")
+MIC_CALIBRATIONS = os.path.join(CONFIG, "mic-calibration")
+ASSIGNMENTS = os.path.join(MIC_CALIBRATIONS, "assignments.json")
+# Where calibration files usually land: miniDSP's are downloaded by serial number.
+CALIBRATION_SEARCH = [MIC_CALIBRATIONS, os.path.expanduser("~/Downloads")]
+DSP_SINK = "camilladsp"
+DSP_STREAM = "camilladsp-playback"
+
+
+def emit(event, **fields):
+    print(json.dumps({"event": event, **fields}, default=float), flush=True)
+
+
+def progress(stage, message, fraction):
+    emit("progress", stage=stage, message=message, fraction=round(fraction, 3))
+
+
+class Refused(Exception):
+    """A reason not to measure, for the user."""
+
+
+# ---------- PipeWire ----------
+
+def pactl_json(*args):
+    out = subprocess.run(["pactl", "-f", "json", *args], capture_output=True, text=True, timeout=5)
+    return json.loads(out.stdout or "[]")
+
+
+def sinks():
+    return [s for s in pactl_json("list", "sinks") if s.get("name") != DSP_SINK]
+
+
+def default_sink():
+    return subprocess.run(["pactl", "get-default-sink"], capture_output=True, text=True, timeout=5).stdout.strip()
+
+
+def default_source():
+    return subprocess.run(["pactl", "get-default-source"], capture_output=True, text=True, timeout=5).stdout.strip()
+
+
+def current_target():
+    try:
+        with open(os.path.join(STATE, "target")) as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def microphones():
+    """Capture devices that can measure a loudspeaker, and those that cannot."""
+    out = []
+    for s in pactl_json("list", "sources"):
+        name = s.get("name", "")
+        if name.endswith(".monitor") or s.get("monitor_source"):
+            continue
+        props = s.get("properties", {})
+        usable, reason = True, ""
+        # A Bluetooth headset microphone runs over HFP: narrowband, with gain
+        # control and noise suppression inside the headset.
+        if name.startswith("bluez_input") or props.get("api.bluez5.profile", "").startswith(("headset", "hfp", "hsp")):
+            usable, reason = False, "Bluetooth headset microphones are too narrowband to measure with"
+        ports = s.get("ports", [])
+        active = s.get("active_port")
+        port = next((p for p in ports if p.get("name") == active), None)
+        if port and port.get("availability") == "not available":
+            usable, reason = False, "nothing plugged in"
+        builtin = props.get("device.bus") == "pci" or props.get("device.form_factor") == "internal" or ".pci-" in name
+        out.append({
+            "name": name,
+            "description": s.get("description", name),
+            "builtin": builtin,
+            "usable": usable,
+            "reason": reason,
+            "muted": bool(s.get("mute")),
+        })
+    return out
+
+
+def preferred_mic(mics):
+    usable = [m for m in mics if m["usable"]]
+    external = [m for m in usable if not m["builtin"]]
+    if external:
+        return external[0]["name"]
+    default = default_source()
+    for m in usable:
+        if m["name"] == default:
+            return m["name"]
+    return usable[0]["name"] if usable else ""
+
+
+def sink_volume_ok(sink):
+    for s in pactl_json("list", "sinks"):
+        if s.get("name") == sink:
+            if s.get("mute"):
+                raise Refused(f"{s.get('description', sink)} is muted. Unmute it and try again.")
+            vols = [v.get("value_percent", "100%") for v in s.get("volume", {}).values()]
+            if vols and all(int(v.rstrip("%") or 0) == 0 for v in vols):
+                raise Refused(f"{s.get('description', sink)} is turned all the way down.")
+            return
+    raise Refused(f"The output {sink} is not connected.")
+
+
+def mic_ok(mic):
+    for m in microphones():
+        if m["name"] == mic:
+            if not m["usable"]:
+                raise Refused(f"{m['description']}: {m['reason']}.")
+            if m["muted"]:
+                raise Refused(f"{m['description']} is muted. Unmute it and try again.")
+            return m
+    raise Refused(f"The microphone {mic} is not connected.")
+
+
+def nothing_playing():
+    """Refuse while anything else plays: it would be measured as the speakers."""
+    for i in pactl_json("list", "sink-inputs"):
+        props = i.get("properties", {})
+        if props.get("node.name") == DSP_STREAM or i.get("corked"):
+            continue
+        app = props.get("application.name") or props.get("media.name") or "Something"
+        raise Refused(f"{app} is playing. Pause it so it is not measured as the speakers.")
+
+
+def play_and_record(played, sink, mic, seconds_extra=1.0, on_tick=None):
+    """Play a stereo float array into sink while recording mono from mic."""
+    tmp = tempfile.mkdtemp(prefix="camilladsp-cal-")
+    try:
+        out_wav = os.path.join(tmp, "play.wav")
+        rec_wav = os.path.join(tmp, "rec.wav")
+        wavfile.write(out_wav, dsp.FS, played.astype(np.float32))
+        rec = subprocess.Popen(
+            ["pw-record", "--target", mic, "--rate", str(dsp.FS), "--channels", "1", "--format", "f32",
+             "-P", "{ node.name = camilladsp-calibration-mic }", rec_wav],
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        time.sleep(0.4)
+        play = subprocess.Popen(
+            ["pw-play", "--target", sink, "-P", "{ node.name = camilladsp-calibration-sweep node.dont-reconnect = true }",
+             out_wav], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        duration = len(played) / dsp.FS
+        start = time.monotonic()
+        while play.poll() is None:
+            if on_tick:
+                on_tick(min((time.monotonic() - start) / duration, 1.0))
+            time.sleep(0.25)
+            if time.monotonic() - start > duration + 10:
+                play.kill()
+                raise Refused("Playback did not finish. Is the output still connected?")
+        time.sleep(seconds_extra)
+        rec.send_signal(os_signal.SIGINT)
+        try:
+            rec.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            rec.kill()
+        if play.returncode != 0:
+            raise Refused("Could not play the test sound: " + play.stderr.read().decode().strip())
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            _, data = wavfile.read(rec_wav)
+        data = np.asarray(data, dtype=np.float64)
+        if data.ndim > 1:
+            data = data.mean(axis=1)
+        if len(data) < len(played) // 2:
+            raise Refused("The microphone recording was cut short.")
+        return data
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ---------- Microphone calibration files ----------
+
+def assignments():
+    return load_json(ASSIGNMENTS) or {}
+
+
+def assigned_calibration(mic):
+    path = assignments().get(mic, "")
+    return path if path and os.path.isfile(path) else ""
+
+
+def calibration_info(path):
+    """Label and serial for a calibration file, or None if it is not one."""
+    try:
+        cal = dsp.read_mic_calibration(path)
+    except (OSError, ValueError):
+        return None
+    name = os.path.basename(path)
+    label = f"Serial {cal['serial']}" if cal["serial"] else name
+    # miniDSP ships a 0-degree file and a 90-degree one, for a microphone
+    # pointed at the speakers or at the ceiling.
+    if re.search(r"90", name):
+        label += " (90°)"
+    elif cal["serial"]:
+        label += " (0°)"
+    return {"path": path, "file": name, "serial": cal["serial"], "label": label}
+
+
+def calibration_files():
+    found, seen = [], set()
+    for folder in CALIBRATION_SEARCH:
+        try:
+            names = sorted(os.listdir(folder))
+        except OSError:
+            continue
+        for name in names:
+            path = os.path.join(folder, name)
+            if not name.lower().endswith((".txt", ".cal", ".frd")) or not os.path.isfile(path):
+                continue
+            if os.path.getsize(path) > 512 * 1024:
+                continue
+            info = calibration_info(path)
+            # The same file downloaded and then copied in counts once.
+            key = (info or {}).get("serial") or name
+            if info and (key, name) not in seen:
+                seen.add((key, name))
+                found.append(info)
+    return found
+
+
+def cmd_mic_cal(args):
+    table = assignments()
+    if args.clear:
+        table.pop(args.mic, None)
+        save_json(ASSIGNMENTS, table)
+        print(json.dumps({"mic": args.mic, "calibration": None}))
+        return
+    info = calibration_info(args.file)
+    if not info:
+        raise Refused(f"{os.path.basename(args.file)} is not a microphone calibration file.")
+    # Keep a copy with the plugin's config, so the measurements stay
+    # reproducible after Downloads is cleaned out.
+    os.makedirs(MIC_CALIBRATIONS, exist_ok=True)
+    kept = os.path.join(MIC_CALIBRATIONS, os.path.basename(args.file))
+    if os.path.realpath(args.file) != os.path.realpath(kept):
+        shutil.copyfile(args.file, kept)
+    table[args.mic] = kept
+    save_json(ASSIGNMENTS, table)
+    print(json.dumps({"mic": args.mic, "calibration": calibration_info(kept)}))
+
+
+# ---------- Session ----------
+
+def measurements():
+    folder = os.path.join(SESSION, "measurements")
+    out = []
+    if os.path.isdir(folder):
+        for name in sorted(os.listdir(folder)):
+            if name.endswith(".json"):
+                with open(os.path.join(folder, name)) as f:
+                    out.append(json.load(f))
+    return out
+
+
+def save_json(path, data):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f, default=float)
+    os.replace(tmp, path)
+
+
+def load_json(path):
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def display(curve):
+    """Every fourth grid point, 1/12-octave smoothed: plenty for the panel."""
+    return [round(float(v), 2) for v in dsp.smooth(np.asarray(curve), 12)[::4]]
+
+
+# ---------- Commands ----------
+
+def cmd_devices(_args):
+    mics = microphones()
+    outs = sinks()
+    target = current_target()
+    default = default_sink()
+    output = target if any(s["name"] == target for s in outs) else (default if default != DSP_SINK else (outs[0]["name"] if outs else ""))
+    session = measurements()
+    if session and any(m["name"] == session[0]["mic"] for m in mics if m["usable"]):
+        mic = session[0]["mic"]
+    else:
+        mic = preferred_mic(mics)
+    for m in mics:
+        cal = assigned_calibration(m["name"])
+        m["calibration"] = calibration_info(cal) if cal else None
+    print(json.dumps({
+        "outputs": [{"name": s["name"], "description": s.get("description", s["name"])} for s in outs],
+        "mics": mics,
+        "calibration_files": calibration_files(),
+        "output": output,
+        "mic": mic,
+    }))
+
+
+def measure(sink, mic, position, stage_name, through_dsp=False, mic_calibration=None):
+    """Probe the level, play the sweeps, analyze. Returns the analysis.
+
+    mic_calibration is a calibration file path, "" for none, or None for the
+    one assigned to the microphone.
+    """
+    if mic_calibration is None:
+        mic_calibration = assigned_calibration(mic)
+    cal_curve = None
+    if mic_calibration:
+        try:
+            cal_curve = dsp.mic_calibration_curve(dsp.read_mic_calibration(mic_calibration))
+        except (OSError, ValueError) as error:
+            raise Refused(f"Could not read the microphone calibration {os.path.basename(mic_calibration)}: {error}.")
+    channels = 2
+    mic_ok(mic)
+    sink_volume_ok(sink if not through_dsp else current_target())
+    nothing_playing()
+
+    progress(stage_name, "Checking the level", 0.02)
+    probe_db = -35.0
+    played, lead = dsp.probe(probe_db)
+    rec = play_and_record(played, DSP_SINK if through_dsp else sink, mic, seconds_extra=0.5)
+    peak, floor = dsp.probe_level(rec, played, lead)
+    level = dsp.choose_level(probe_db, peak, floor)
+
+    played, schedule = dsp.excitation(channels=channels, repeats=3, level_db=level)
+    sweep_names = ["left", "right"]
+
+    def tick(fraction):
+        t = fraction * len(played) / dsp.FS - dsp.LEAD_SECONDS
+        slot = int(max(t, 0) // (dsp.SWEEP_SECONDS + dsp.GAP_SECONDS))
+        which = sweep_names[schedule[min(slot, len(schedule) - 1)][0]] if t > 0 else ""
+        message = f"Sweeping the {which} speaker" if which else "Listening to the room"
+        progress(stage_name, message, 0.08 + 0.82 * fraction)
+
+    rec = play_and_record(played, DSP_SINK if through_dsp else sink, mic, on_tick=tick)
+    progress(stage_name, "Analyzing", 0.93)
+    nearfield = position == "nearfield"
+    result = dsp.analyze(rec, played, schedule, max_gate=0.3 if nearfield else 0.5)
+    if cal_curve is not None:
+        dsp.apply_mic_calibration(result, cal_curve)
+    result.update({"output": sink, "mic": mic, "position": position, "level_db": level,
+                   "mic_calibration": mic_calibration,
+                   "time": datetime.datetime.now().isoformat(timespec="seconds")})
+    return result
+
+
+def cmd_measure(args):
+    session = measurements()
+    calibration = assigned_calibration(args.mic)
+    if session and (session[0]["output"] != args.output or session[0]["mic"] != args.mic
+                    or session[0].get("mic_calibration", "") != calibration):
+        # A different speaker, microphone or microphone calibration starts a new
+        # session: averaging across them would describe none of them.
+        cmd_reset(args, quiet=True)
+        session = []
+    result = measure(args.output, args.mic, args.position, "measure", mic_calibration=calibration)
+    index = len(session) + 1
+    save_json(os.path.join(SESSION, "measurements", f"{index:02d}.json"), result)
+    combined = dsp.combine(measurements())
+    emit("result", measurements=index, warnings=result["warnings"],
+         curves=[display(c["mean"]) for c in combined], grid=[round(float(f), 1) for f in dsp.GRID[::4]])
+
+
+def cmd_fit(args):
+    session = measurements()
+    if not session:
+        raise Refused("Measure at least once first.")
+    channels = dsp.combine(session)
+    target = dsp.target_curve(args.target)
+    listening = all(m["position"] == "listening" for m in session)
+    align = args.align == "on" or (args.align == "auto" and listening)
+    trims = dsp.alignment(channels) if align else [{"delay_ms": 0.0, "trim_db": 0.0} for _ in channels]
+
+    per_channel, corrections, report = [], [], []
+    fir_files = None
+    for ch, c in enumerate(channels):
+        if args.mode == "fir":
+            taps, knee, corr = dsp.fir_correction(c, target)
+            filters = [{"type": "Highpass", "freq": round(knee, 1), "q": 0.707}] if knee > 30 else []
+            os.makedirs(FILTERS, exist_ok=True)
+            path = os.path.join(FILTERS, f"calibrated-ch{ch}.wav")
+            wavfile.write(path, dsp.FS, taps)
+            fir_files = (fir_files or []) + [path]
+            correction = corr
+            info = {"knee": knee, "fmin": dsp.fit_floor(c["mean"], target, knee), "fmax": 18000.0}
+            info["error_before"] = dsp.correction_error(c, target, filters)
+            info["error_after"] = dsp._cost(*_fir_residual(c, target, filters, corr, info))
+        else:
+            filters, info = dsp.fit_peq(c, target)
+            correction = dsp.peq_db([f for f in filters if f["type"] != "Highpass"])
+        trim = trims[ch]["trim_db"]
+        corrections.append(correction + trim)
+        per_channel.append({"filters": filters, **trims[ch]})
+        predicted = c["mean"] + dsp.peq_db(filters) + (correction if args.mode == "fir" else 0) + trim
+        report.append({
+            "filters": filters, "delay_ms": trims[ch]["delay_ms"], "trim_db": trim,
+            "knee": info["knee"], "fmin": info["fmin"], "fmax": info["fmax"],
+            "error_before": info["error_before"], "error_after": info["error_after"],
+            "measured": display(c["mean"]), "predicted": display(predicted),
+        })
+
+    preamp = dsp.preamp_for(corrections)
+    name = next((s.get("description") for s in sinks() if s["name"] == session[0]["output"]), session[0]["output"])
+    title = f"Calibrated: {name}"
+    detail = (f"{len(session)} position{'s' if len(session) != 1 else ''}, {args.target} target, "
+              f"{'FIR' if args.mode == 'fir' else 'parametric EQ'}"
+              f"{', aligned' if align else ''}, measured {session[-1]['time'][:10]}")
+    text = dsp.preset_yaml(title, detail, per_channel, preamp, fir_files)
+    os.makedirs(os.path.dirname(PRESET), exist_ok=True)
+    with open(PRESET + ".tmp", "w") as f:
+        f.write(text)
+    os.replace(PRESET + ".tmp", PRESET)
+
+    fit = {"preset": PRESET_ID, "title": title, "description": detail, "target": args.target, "mode": args.mode,
+           "aligned": align, "preamp_db": preamp, "output": session[0]["output"], "mic": session[0]["mic"],
+           "positions": len(session), "grid": [round(float(f), 1) for f in dsp.GRID[::4]],
+           "target_curve": display(target), "channels": report,
+           "time": datetime.datetime.now().isoformat(timespec="seconds")}
+    save_json(os.path.join(SESSION, "fit.json"), fit)
+    try:
+        os.remove(os.path.join(SESSION, "check.json"))
+    except OSError:
+        pass
+    emit("result", **fit)
+
+
+def _fir_residual(channel, target, filters, corr, info):
+    hp = dsp.peq_db(filters)
+    goal = target + hp
+    w = dsp._weights((dsp.GRID >= info["fmin"]) & (dsp.GRID <= info["fmax"]), channel["snr"], channel["spread"])
+    curve = channel["mean"] + hp + corr
+    curve = curve + np.sum(w * (goal - curve)) / max(np.sum(w), 1e-9)
+    return curve - goal, w
+
+
+def cmd_check(args):
+    fit = load_json(os.path.join(SESSION, "fit.json"))
+    if not fit:
+        raise Refused("Build a calibration first.")
+    state = subprocess.run(["systemctl", "--user", "is-active", "omarchy-camilladsp.service"],
+                           capture_output=True, text=True).stdout.strip()
+    if state != "active" or default_sink() != DSP_SINK:
+        raise Refused("Turn CamillaDSP on with the calibrated preset first.")
+    try:
+        with open(os.path.join(STATE, "preset")) as f:
+            if f.read().strip() != PRESET_ID:
+                raise Refused("Select the calibrated preset first.")
+    except OSError:
+        raise Refused("Select the calibrated preset first.")
+    # The check must use the same microphone and speaker as the calibration;
+    # another one would measure the difference between two microphones.
+    session = measurements()
+    position = session[-1]["position"] if session else "nearfield"
+    calibration = session[0].get("mic_calibration", "") if session else ""
+    result = measure(fit["output"], fit["mic"], position, "check", through_dsp=True, mic_calibration=calibration)
+    after = dsp.combine([result])
+    before = dsp.combine(session)
+    try:
+        target = dsp.target_curve(fit["target"])
+    except OSError:
+        raise Refused(f"The target curve {fit['target']} is gone; build the calibration again.")
+    report = []
+    for ch, (b, a, planned) in enumerate(zip(before, after, fit["channels"])):
+        hp = dsp.peq_db([f for f in planned["filters"] if f["type"] == "Highpass"])
+        goal = target + hp
+        w = dsp._weights((dsp.GRID >= planned["fmin"]) & (dsp.GRID <= planned["fmax"]), a["snr"], a["spread"])
+
+        def err(curve):
+            c = curve + np.sum(w * (goal - curve)) / max(np.sum(w), 1e-9)
+            return dsp._cost(c - goal, w)
+
+        predicted = np.interp(np.log(dsp.GRID), np.log(fit["grid"]), planned["predicted"])
+        off = a["mean"] - predicted
+        off -= np.sum(w * off) / max(np.sum(w), 1e-9)
+        report.append({"error_before": err(b["mean"] + hp), "error_after": err(a["mean"]),
+                       "plan_deviation": float(np.sqrt(np.sum(w * off ** 2) / max(np.sum(w), 1e-9))),
+                       "checked": display(a["mean"])})
+    check = {"channels": report, "warnings": result["warnings"],
+             "time": datetime.datetime.now().isoformat(timespec="seconds")}
+    save_json(os.path.join(SESSION, "check.json"), check)
+    emit("result", **check)
+
+
+def cmd_summary(_args):
+    session = measurements()
+    out = {"measurements": len(session), "output": session[0]["output"] if session else "",
+           "mic": session[0]["mic"] if session else "",
+           "mic_calibration": session[0].get("mic_calibration", "") if session else "",
+           "positions": [m["position"] for m in session],
+           "fit": load_json(os.path.join(SESSION, "fit.json")),
+           "check": load_json(os.path.join(SESSION, "check.json")),
+           "preset": PRESET_ID if os.path.exists(PRESET) else ""}
+    if session:
+        combined = dsp.combine(session)
+        out["grid"] = [round(float(f), 1) for f in dsp.GRID[::4]]
+        out["curves"] = [display(c["mean"]) for c in combined]
+    print(json.dumps(out, default=float))
+
+
+def cmd_reset(_args, quiet=False):
+    shutil.rmtree(os.path.join(SESSION, "measurements"), ignore_errors=True)
+    for name in ("fit.json", "check.json"):
+        try:
+            os.remove(os.path.join(SESSION, name))
+        except OSError:
+            pass
+    if not quiet:
+        print("Measurements cleared.")
+
+
+def main():
+    parser = argparse.ArgumentParser(prog="calibrate")
+    sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser("devices")
+    m = sub.add_parser("measure")
+    m.add_argument("--output", required=True)
+    m.add_argument("--mic", required=True)
+    m.add_argument("--position", choices=["nearfield", "listening"], default="nearfield")
+    f = sub.add_parser("fit")
+    f.add_argument("--target", default="flat")
+    f.add_argument("--mode", choices=["peq", "fir"], default="peq")
+    f.add_argument("--align", choices=["auto", "on", "off"], default="auto")
+    sub.add_parser("check")
+    c = sub.add_parser("mic-cal")
+    c.add_argument("--mic", required=True)
+    group = c.add_mutually_exclusive_group(required=True)
+    group.add_argument("--file")
+    group.add_argument("--clear", action="store_true")
+    sub.add_parser("summary")
+    sub.add_parser("reset")
+    args = parser.parse_args()
+
+    commands = {"devices": cmd_devices, "measure": cmd_measure, "fit": cmd_fit, "check": cmd_check,
+                "summary": cmd_summary, "reset": cmd_reset, "mic-cal": cmd_mic_cal}
+    try:
+        commands[args.command](args)
+    except (Refused, dsp.MeasurementError) as error:
+        emit("error", message=str(error))
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

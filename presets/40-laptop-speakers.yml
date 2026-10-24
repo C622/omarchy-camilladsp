@@ -1,0 +1,30 @@
+title: Laptop speakers
+description: Rolls off bass the drivers cannot play, which buys clean loudness, and adds a little presence.
+filters:
+  preamp:
+    type: Gain
+    parameters:
+      gain: -3.0
+  rumble:
+    type: Biquad
+    parameters:
+      type: Highpass
+      freq: 120
+      q: 0.707
+  body:
+    type: Biquad
+    parameters:
+      type: Peaking
+      freq: 220
+      gain: 2.0
+      q: 1.2
+  presence:
+    type: Biquad
+    parameters:
+      type: Peaking
+      freq: 4000
+      gain: 2.0
+      q: 1.0
+pipeline:
+  - type: Filter
+    names: [preamp, rumble, body, presence]

@@ -1,0 +1,17 @@
+title: Bass boost
+description: +6 dB low shelf at 100 Hz, with 6 dB of headroom so it never clips.
+filters:
+  preamp:
+    type: Gain
+    parameters:
+      gain: -6.0
+  bass:
+    type: Biquad
+    parameters:
+      type: Lowshelf
+      freq: 100
+      gain: 6.0
+      slope: 6
+pipeline:
+  - type: Filter
+    names: [preamp, bass]

@@ -1,0 +1,632 @@
+#!/bin/bash
+
+# Route all desktop audio through CamillaDSP and switch its presets.
+#
+# Applications play into a virtual "CamillaDSP" sink. CamillaDSP captures that
+# sink's monitor with its PipeWire backend, runs the selected preset, and plays
+# the result to the real output it was turned on for. Turning it off points the
+# default output back at that device and stops both services.
+
+set -uo pipefail
+
+plugin_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+config_home="${XDG_CONFIG_HOME:-$HOME/.config}"
+state_home="${XDG_STATE_HOME:-$HOME/.local/state}"
+
+config_dir="$config_home/camilladsp"
+presets_dir="$config_dir/presets"
+settings_file="$config_dir/omarchy.conf"
+state_dir="$state_home/omarchy-camilladsp"
+active_config="$state_dir/active.yml"
+target_file="$state_dir/target"
+preset_file="$state_dir/preset"
+unit_dir="$config_home/systemd/user"
+wireplumber_rule="$config_home/wireplumber/wireplumber.conf.d/60-omarchy-camilladsp.conf"
+# Earlier versions hosted the sink in a PipeWire client with this config.
+stale_sink_config="$config_home/pipewire/omarchy-camilladsp-sink.conf"
+
+service=omarchy-camilladsp.service
+sink_service=omarchy-camilladsp-sink.service
+sink_name=camilladsp
+capture_node=camilladsp-capture
+playback_node=camilladsp-playback
+ipc_target=community.camilladsp
+
+# Overridable in ~/.config/camilladsp/omarchy.conf.
+port=1234
+samplerate=48000
+chunksize=1024
+camilladsp_version=v4.1.3
+camilladsp_repo=https://github.com/HEnquist/camilladsp
+
+# shellcheck disable=SC1090
+[[ -r $settings_file ]] && source "$settings_file"
+
+usage() {
+  cat <<USAGE
+Usage: camilladsp-omarchy <command>
+
+  setup                  Install CamillaDSP if needed, the virtual sink, and the services
+  on                     Route all audio through CamillaDSP (re-run to follow a new output)
+  off                    Send audio straight to the real output again
+  toggle                 Switch between on and off
+  preset <id|next|prev>  Apply a preset from $presets_dir
+  presets                List presets as id<TAB>title
+  status [--json]        Show what is running and where audio goes
+  reset-clipping         Zero CamillaDSP's clipped-samples counter
+  calibrate <command>    Measure with a microphone and build a preset:
+                           devices | measure --output O --mic M [--position nearfield|listening]
+                           fit [--target flat|warm|room|FILE] [--mode peq|fir] | apply | check
+                           summary | reset
+  uninstall              Turn off and remove the services and sink (presets are kept)
+USAGE
+}
+
+fail() {
+  echo "camilladsp-omarchy: $*" >&2
+  exit 1
+}
+
+refresh_shell() {
+  omarchy-shell -q "$ipc_target" refresh >/dev/null 2>&1 || true
+}
+
+notify() {
+  omarchy-notification-send -g $'\uf1de' -t 2000 "$@" >/dev/null 2>&1 || true
+}
+
+# ---------- CamillaDSP binary ----------
+
+has_pipewire_backend() {
+  "$1" --help 2>/dev/null | grep -q '^Capture:.*PipeWire'
+}
+
+# Prefer a build with the PipeWire backend: a distribution package built without
+# it can sit on PATH next to the one setup compiled into ~/.local/bin.
+camilladsp_bin() {
+  local candidate first=""
+  for candidate in "$HOME/.local/bin/camilladsp" "$(command -v camilladsp 2>/dev/null)"; do
+    [[ -n $candidate && -x $candidate ]] || continue
+    [[ -n $first ]] || first="$candidate"
+    if has_pipewire_backend "$candidate"; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  [[ -n $first ]] && printf '%s\n' "$first"
+  return 1
+}
+
+install_camilladsp() {
+  echo "Building CamillaDSP $camilladsp_version with the PipeWire backend into ~/.local/bin."
+  echo "This takes a few minutes the first time."
+  echo
+
+  if omarchy-cmd-missing cargo; then
+    if omarchy-cmd-present rustup; then
+      rustup default stable || return 1
+    else
+      omarchy-pkg-add rust || return 1
+    fi
+  fi
+  # The pipewire crate generates its bindings with bindgen, which needs libclang.
+  omarchy-pkg-add clang pkgconf pipewire || return 1
+
+  cargo install --locked --root "$HOME/.local" \
+    --git "$camilladsp_repo" --tag "$camilladsp_version" \
+    --features pipewire-backend camilladsp || return 1
+
+  has_pipewire_backend "$HOME/.local/bin/camilladsp" ||
+    fail "the build finished but has no PipeWire backend"
+}
+
+# ---------- Presets ----------
+
+preset_ids() {
+  local file
+  for file in "$presets_dir"/*.yml; do
+    [[ -f $file ]] || continue
+    file="${file##*/}"
+    printf '%s\n' "${file%.yml}"
+  done
+}
+
+preset_title() {
+  local title
+  title="$(sed -n 's/^title:[[:space:]]*//p' "$presets_dir/$1.yml" 2>/dev/null | head -n1)"
+  title="${title%\"}"
+  title="${title#\"}"
+  title="${title%\'}"
+  title="${title#\'}"
+  if [[ -n $title ]]; then
+    printf '%s\n' "$title"
+  else
+    printf '%s\n' "$1"
+  fi
+}
+
+current_preset() {
+  local preset
+  preset="$(cat "$preset_file" 2>/dev/null)"
+  if [[ -n $preset && -f $presets_dir/$preset.yml ]]; then
+    printf '%s\n' "$preset"
+  else
+    preset_ids | head -n1
+  fi
+}
+
+# Step through the presets in file-name order, wrapping at either end.
+neighbour_preset() {
+  local direction="$1" current ids index count
+  current="$(current_preset)"
+  mapfile -t ids < <(preset_ids)
+  count=${#ids[@]}
+  (( count > 0 )) || return 1
+
+  for index in "${!ids[@]}"; do
+    [[ ${ids[index]} == "$current" ]] && break
+  done
+  if [[ $direction == "next" ]]; then
+    index=$(( (index + 1) % count ))
+  else
+    index=$(( (index - 1 + count) % count ))
+  fi
+  printf '%s\n' "${ids[index]}"
+}
+
+# Drop any top-level devices: block, so a full config exported from another tool
+# can be used as a preset. This plugin owns the devices.
+strip_devices() {
+  awk '
+    /^[^[:space:]#]/ { skip = ($0 ~ /^devices:/) }
+    !skip
+  '
+}
+
+yaml_string() {
+  jq -Rn --arg value "$1" '$value'
+}
+
+render_config() {
+  local preset="$1" target="$2" source="$presets_dir/$1.yml" bin tmp
+
+  [[ -f $source ]] || fail "no preset named '$preset' in $presets_dir"
+  mkdir -p "$state_dir"
+  tmp="$active_config.tmp"
+
+  {
+    printf '# Generated by camilladsp-omarchy from %s -- edit the preset, not this file.\n' "$source"
+    cat <<YAML
+devices:
+  samplerate: $samplerate
+  chunksize: $chunksize
+  capture:
+    type: PipeWire
+    channels: 2
+    node_name: $capture_node
+    node_description: CamillaDSP Capture
+    autoconnect_to: $sink_name
+  playback:
+    type: PipeWire
+    channels: 2
+    node_name: $playback_node
+    node_description: CamillaDSP Output
+    autoconnect_to: $(yaml_string "$target")
+YAML
+    strip_devices <"$source"
+  } >"$tmp"
+
+  # Refuse a broken preset here, while there is a terminal or caller to tell,
+  # instead of letting the running CamillaDSP log it and keep the old one.
+  if bin="$(camilladsp_bin)"; then
+    local errors
+    if ! errors="$("$bin" --check "$tmp" 2>&1)"; then
+      rm -f "$tmp"
+      echo "$errors" >&2
+      fail "preset '$preset' is not a valid CamillaDSP config"
+    fi
+  fi
+
+  mv "$tmp" "$active_config"
+}
+
+# ---------- Audio graph ----------
+
+default_sink() {
+  timeout 2 pactl get-default-sink 2>/dev/null
+}
+
+sink_exists() {
+  timeout 2 pactl list sinks short 2>/dev/null | awk -v sink="$1" '$2 == sink { found = 1 } END { exit !found }'
+}
+
+sink_description() {
+  timeout 2 pactl -f json list sinks 2>/dev/null |
+    jq -r --arg sink "$1" 'first(.[] | select(.name == $sink) | .description) // empty' 2>/dev/null
+}
+
+# The device CamillaDSP should play to: whatever the default output is now, unless
+# that is already the CamillaDSP sink, in which case the one it was turned on for.
+choose_target() {
+  local current stored
+  current="$(default_sink)"
+  if [[ -n $current && $current != "$sink_name" ]]; then
+    printf '%s\n' "$current"
+    return 0
+  fi
+
+  stored="$(cat "$target_file" 2>/dev/null)"
+  if [[ -n $stored ]] && sink_exists "$stored"; then
+    printf '%s\n' "$stored"
+    return 0
+  fi
+
+  timeout 2 pactl list sinks short 2>/dev/null | awk -v own="$sink_name" '$2 != own { print $2; exit }' | grep .
+}
+
+# Like omarchy-audio-output-set-default, but never moves CamillaDSP's own output
+# stream: moving it into the CamillaDSP sink would feed the processing back into
+# itself. DSP outputs without an application.name are left alone the same way.
+set_default_output() {
+  local sink="$1"
+  timeout 2 pactl set-default-sink "$sink" 2>/dev/null || true
+
+  LC_ALL=C timeout 2 pactl list sink-inputs 2>/dev/null | awk '
+    /^Sink Input #/ { id = substr($3, 2) }
+    /application\.name = / {
+      app = $0
+      sub(/.*application\.name = "/, "", app)
+      sub(/"$/, "", app)
+      if (app != "CamillaDSP" && app != "EasyEffects") print id
+    }' | while read -r input; do
+    [[ -n $input ]] && timeout 2 pactl move-sink-input "$input" "$sink" 2>/dev/null || true
+  done
+}
+
+# autoconnect_to only chooses CamillaDSP's first link: WirePlumber then treats the
+# output as following the default sink, and making the CamillaDSP sink the
+# default would move the output into its own input. Moving the stream explicitly,
+# as the sound settings do when a user moves it, pins it to the real output.
+pin_output() {
+  local target="$1" input
+  input="$(LC_ALL=C timeout 2 pactl list sink-inputs 2>/dev/null | awk -v node="$playback_node" '
+    /^Sink Input #/ { id = substr($3, 2) }
+    /node\.name = / && index($0, "\"" node "\"") { print id; exit }')"
+  [[ -n $input ]] || return 1
+  timeout 2 pactl move-sink-input "$input" "$target" 2>/dev/null
+}
+
+wait_for() {
+  local tries=50
+  until "$@"; do
+    (( --tries > 0 )) || return 1
+    sleep 0.1
+  done
+}
+
+has_ports() {
+  pw-link "$1" 2>/dev/null | grep -q "^$2:"
+}
+
+# Print "from<TAB>to" for every link in the graph.
+links() {
+  pw-link -l 2>/dev/null | awk '
+    /^[^ |]/ { port = $0 }
+    /\|->/ { sub(/^[[:space:]]*\|->[[:space:]]*/, ""); print port "\t" $0 }'
+}
+
+# CamillaDSP asks WirePlumber to connect both ends through autoconnect_to, but
+# the result is checked rather than trusted. The capture must hear only the
+# CamillaDSP sink and the output must not play into it: anything else, such as a
+# fallback to the speakers' own monitor while the sink was missing, is a feedback
+# loop and is disconnected. Missing links are made directly, so turning it on
+# never leaves the audio silent even if WirePlumber declined.
+ensure_links() {
+  local target="$1" from to channel
+  wait_for has_ports --input "$capture_node" || return 1
+  wait_for has_ports --output "$playback_node" || return 1
+  sleep 0.3
+
+  while IFS=$'\t' read -r from to; do
+    if [[ $to == "$capture_node:"* && $from != "$sink_name:monitor_"* ]] ||
+      [[ $from == "$playback_node:"* && $to == "$sink_name:"* ]]; then
+      pw-link -d "$from" "$to" 2>/dev/null
+    fi
+  done < <(links)
+
+  for channel in FL FR; do
+    links | grep -qxF "$sink_name:monitor_$channel"$'\t'"$capture_node:input_$channel" ||
+      pw-link "$sink_name:monitor_$channel" "$capture_node:input_$channel" 2>/dev/null
+  done
+  if ! links | grep -q "^$playback_node:"; then
+    for channel in FL FR; do
+      pw-link "$playback_node:output_$channel" "$target:playback_$channel" 2>/dev/null
+    done
+  fi
+  return 0
+}
+
+# ---------- Service state ----------
+
+is_setup() {
+  [[ -f $unit_dir/$service && -f $unit_dir/$sink_service ]]
+}
+
+require_setup() {
+  is_setup || fail "not set up yet, run: camilladsp-omarchy setup"
+  camilladsp_bin >/dev/null || fail "camilladsp is not installed, run: camilladsp-omarchy setup"
+}
+
+service_state() {
+  systemctl --user is-active "$service" 2>/dev/null || true
+}
+
+is_on() {
+  [[ $(service_state) == "active" && $(default_sink) == "$sink_name" ]]
+}
+
+python() {
+  "${CAMILLADSP_PYTHON:-python3}" -I "$@"
+}
+
+dsp_query() {
+  python "$plugin_dir/lib/camilla-ws" "$port" "$@"
+}
+
+# ---------- Commands ----------
+
+cmd_setup() {
+  local bin source target preset
+
+  echo "Setting up CamillaDSP for Omarchy"
+  echo
+
+  if ! bin="$(camilladsp_bin)" || ! has_pipewire_backend "$bin"; then
+    install_camilladsp || fail "could not install CamillaDSP"
+    bin="$HOME/.local/bin/camilladsp"
+  fi
+  echo "Using $("$bin" --version 2>/dev/null) at $bin"
+
+  # The calibrator analyzes its recordings with numpy and scipy.
+  omarchy-pkg-add python-numpy python-scipy || fail "could not install python-numpy and python-scipy"
+
+  mkdir -p "$presets_dir" "$state_dir" "$unit_dir" "${wireplumber_rule%/*}"
+  for source in "$plugin_dir"/presets/*.yml; do
+    [[ -e $presets_dir/${source##*/} ]] || cp "$source" "$presets_dir/"
+  done
+  echo "Presets are in $presets_dir"
+
+  rm -f "$stale_sink_config"
+  cp "$plugin_dir/templates/$sink_service" "$unit_dir/$sink_service"
+  sed -e "s|@CAMILLADSP@|$bin|" -e "s|@PORT@|$port|" -e "s|@STATE_DIR@|$state_dir|g" \
+    "$plugin_dir/templates/$service" >"$unit_dir/$service"
+  systemctl --user daemon-reload
+
+  # WirePlumber reads its rules at startup. Restarting it only re-runs the routing
+  # policy; streams keep playing.
+  if ! cmp -s "$plugin_dir/templates/wireplumber-camilladsp.conf" "$wireplumber_rule"; then
+    cp "$plugin_dir/templates/wireplumber-camilladsp.conf" "$wireplumber_rule"
+    systemctl --user restart wireplumber.service
+  fi
+
+  target="$(choose_target)" || fail "no audio output found"
+  preset="$(current_preset)"
+  [[ -n $preset ]] || fail "no presets in $presets_dir"
+  render_config "$preset" "$target"
+  printf '%s\n' "$preset" >"$preset_file"
+
+  refresh_shell
+  echo
+  echo "Done. Turn it on from the bar, or run: camilladsp-omarchy on"
+}
+
+cmd_on() {
+  local target preset was_active
+
+  require_setup
+  target="$(choose_target)" || fail "no audio output found"
+  preset="$(current_preset)"
+  [[ -n $preset ]] || fail "no presets in $presets_dir"
+
+  render_config "$preset" "$target"
+  printf '%s\n' "$target" >"$target_file"
+  printf '%s\n' "$preset" >"$preset_file"
+
+  [[ $(service_state) == "active" ]] && was_active=1 || was_active=0
+  # Enabled, so it comes back at the next login with the same routing.
+  systemctl --user enable --now "$service" >/dev/null 2>&1 || fail "could not start $service (journalctl --user -u $service)"
+  (( was_active )) && systemctl --user reload "$service"
+
+  wait_for sink_exists "$sink_name" || fail "the CamillaDSP sink did not appear (journalctl --user -u $sink_service)"
+  ensure_links "$target" || fail "CamillaDSP did not come up (journalctl --user -u $service)"
+  pin_output "$target"
+  set_default_output "$sink_name"
+  # Check again once WirePlumber has reacted to the new default.
+  sleep 0.5
+  ensure_links "$target"
+
+  refresh_shell
+  echo "CamillaDSP is on: $(preset_title "$preset") -> $(sink_description "$target" || echo "$target")"
+}
+
+cmd_off() {
+  local target
+
+  target="$(cat "$target_file" 2>/dev/null)"
+  if [[ $(default_sink) == "$sink_name" ]]; then
+    if [[ -z $target ]] || ! sink_exists "$target"; then
+      target="$(timeout 2 pactl list sinks short 2>/dev/null | awk -v own="$sink_name" '$2 != own { print $2; exit }')"
+    fi
+    [[ -n $target ]] && set_default_output "$target"
+  fi
+
+  systemctl --user disable --now "$service" >/dev/null 2>&1
+  systemctl --user stop "$sink_service" >/dev/null 2>&1
+
+  refresh_shell
+  echo "CamillaDSP is off"
+}
+
+cmd_toggle() {
+  if is_on; then
+    cmd_off
+  else
+    cmd_on
+  fi
+}
+
+cmd_preset() {
+  local preset="${1:-}" notify_change=0 target
+
+  [[ ${2:-} == "--notify" ]] && notify_change=1
+  case $preset in
+    "") fail "usage: camilladsp-omarchy preset <id|next|prev>" ;;
+    next | prev) preset="$(neighbour_preset "$preset")" || fail "no presets in $presets_dir" ;;
+  esac
+  [[ -f $presets_dir/$preset.yml ]] || fail "no preset named '$preset' in $presets_dir"
+
+  target="$(cat "$target_file" 2>/dev/null)"
+  [[ -n $target ]] || target="$(choose_target)" || fail "no audio output found"
+
+  render_config "$preset" "$target"
+  printf '%s\n' "$preset" >"$preset_file"
+
+  if [[ $(service_state) == "active" ]]; then
+    systemctl --user reload "$service"
+    pin_output "$target"
+    ensure_links "$target" >/dev/null 2>&1 || true
+  fi
+
+  refresh_shell
+  (( notify_change )) && notify "CamillaDSP" "$(preset_title "$preset")"
+  echo "Preset: $(preset_title "$preset")"
+}
+
+cmd_presets() {
+  local id
+  while IFS= read -r id; do
+    printf '%s\t%s\n' "$id" "$(preset_title "$id")"
+  done < <(preset_ids)
+}
+
+cmd_reset_clipping() {
+  dsp_query '"ResetClippedSamples"' >/dev/null || fail "CamillaDSP is not running"
+  refresh_shell
+}
+
+status_json() {
+  local bin="" installed=false pipewire=false setup=false state target default description dsp="null"
+  local presets
+
+  if bin="$(camilladsp_bin)"; then
+    installed=true
+    has_pipewire_backend "$bin" && pipewire=true
+  fi
+  is_setup && setup=true
+  state="$(service_state)"
+  default="$(default_sink)"
+  target="$(cat "$target_file" 2>/dev/null)"
+  description="$( [[ -n $target ]] && sink_description "$target")"
+
+  if [[ $state == "active" ]]; then
+    dsp="$(dsp_query '"GetState"' '"GetProcessingLoad"' '"GetClippedSamples"' '"GetCaptureRate"' '"GetVersion"' 2>/dev/null |
+      jq -c 'with_entries(.value |= .value)' 2>/dev/null)"
+    [[ -n $dsp && $dsp != "{}" ]] || dsp="null"
+  fi
+
+  presets="$(cmd_presets | jq -Rsc 'split("\n") | map(select(length > 0) | split("\t") | { id: .[0], title: .[1] })')"
+
+  jq -nc \
+    --argjson installed "$installed" \
+    --argjson pipewire "$pipewire" \
+    --argjson setup "$setup" \
+    --arg service "${state:-inactive}" \
+    --arg default "$default" \
+    --arg sink "$sink_name" \
+    --arg target "$target" \
+    --arg description "$description" \
+    --arg preset "$(current_preset)" \
+    --argjson presets "${presets:-[]}" \
+    --argjson dsp "$dsp" \
+    --arg presetsDir "$presets_dir" \
+    '{
+      installed: $installed,
+      pipewire: $pipewire,
+      setup: $setup,
+      service: $service,
+      defaultSink: $default,
+      routed: ($service == "active" and $default == $sink),
+      target: $target,
+      targetDescription: $description,
+      preset: $preset,
+      presets: $presets,
+      presetsDir: $presetsDir,
+      dsp: $dsp
+    }'
+}
+
+cmd_status() {
+  local json
+  json="$(status_json)"
+  if [[ ${1:-} == "--json" ]]; then
+    printf '%s\n' "$json"
+    return 0
+  fi
+
+  jq -r '
+    "CamillaDSP:  " + (if .installed then (if .pipewire then "installed" else "installed, but without the PipeWire backend" end) else "not installed" end),
+    "Setup:       " + (if .setup then "done" else "not set up (camilladsp-omarchy setup)" end),
+    "Service:     " + .service,
+    "Routing:     " + (if .routed then "on, playing to " + (if .targetDescription != "" then .targetDescription else .target end)
+                      elif .service == "active" then "bypassed, default output is " + .defaultSink
+                      else "off" end),
+    "Preset:      " + ((.presets[] | select(.id == $preset) | .title) // .preset),
+    (if .dsp then "DSP:         " + (.dsp.GetState // "?") + ", load " + ((.dsp.GetProcessingLoad // 0) * 10 | round / 10 | tostring) + "%, clipped samples " + ((.dsp.GetClippedSamples // 0) | tostring) else empty end)
+  ' --arg preset "$(jq -r .preset <<<"$json")" <<<"$json"
+}
+
+cmd_calibrate() {
+  local status
+  case ${1:-} in
+    apply)
+      # Fitting writes the preset; applying it is turning CamillaDSP on with it.
+      [[ -f $presets_dir/80-calibrated.yml ]] || fail "no calibration yet, run: camilladsp-omarchy calibrate fit"
+      cmd_preset 80-calibrated >/dev/null
+      cmd_on
+      ;;
+    "")
+      fail "usage: camilladsp-omarchy calibrate <devices|measure|fit|apply|check|summary|reset>"
+      ;;
+    *)
+      python "$plugin_dir/lib/calibrate" "$@"
+      status=$?
+      [[ $1 == "fit" || $1 == "reset" ]] && refresh_shell
+      return "$status"
+      ;;
+  esac
+}
+
+cmd_uninstall() {
+  cmd_off >/dev/null
+  rm -f "$unit_dir/$service" "$unit_dir/$sink_service" "$stale_sink_config" "$wireplumber_rule"
+  systemctl --user daemon-reload
+  refresh_shell
+  echo "Removed the CamillaDSP services and sink. Presets stay in $presets_dir."
+  [[ -x $HOME/.local/bin/camilladsp ]] && echo "The CamillaDSP build stays at ~/.local/bin/camilladsp."
+  return 0
+}
+
+case ${1:-} in
+  setup) cmd_setup ;;
+  on) cmd_on ;;
+  off) cmd_off ;;
+  toggle) cmd_toggle ;;
+  preset) shift; cmd_preset "$@" ;;
+  presets) cmd_presets ;;
+  status) shift; cmd_status "$@" ;;
+  reset-clipping) cmd_reset_clipping ;;
+  calibrate) shift; cmd_calibrate "$@" ;;
+  uninstall) cmd_uninstall ;;
+  -h | --help | help) usage ;;
+  *) usage >&2; exit 1 ;;
+esac

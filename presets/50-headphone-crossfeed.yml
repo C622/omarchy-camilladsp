@@ -1,0 +1,61 @@
+title: Headphone crossfeed
+description: Feeds a delayed, low-passed copy of each side into the other ear, so hard-panned mixes sound less tiring on headphones.
+filters:
+  cross_lowpass:
+    type: Biquad
+    parameters:
+      type: LowpassFO
+      freq: 700
+  cross_delay:
+    type: Delay
+    parameters:
+      delay: 0.3
+      unit: ms
+      subsample: true
+mixers:
+  split:
+    description: L, R, L to cross, R to cross
+    channels:
+      in: 2
+      out: 4
+    mapping:
+      - dest: 0
+        sources:
+          - channel: 0
+      - dest: 1
+        sources:
+          - channel: 1
+      - dest: 2
+        sources:
+          - channel: 0
+            gain: -8.0
+      - dest: 3
+        sources:
+          - channel: 1
+            gain: -8.0
+  join:
+    description: Each ear gets its own side plus the other side's crossfeed
+    channels:
+      in: 4
+      out: 2
+    mapping:
+      - dest: 0
+        sources:
+          - channel: 0
+            gain: -3.0
+          - channel: 3
+            gain: -3.0
+      - dest: 1
+        sources:
+          - channel: 1
+            gain: -3.0
+          - channel: 2
+            gain: -3.0
+pipeline:
+  - type: Mixer
+    name: split
+  - type: Filter
+    channels: [2, 3]
+    names: [cross_lowpass, cross_delay]
+  - type: Mixer
+    name: join

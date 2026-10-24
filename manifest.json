@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "id": "community.camilladsp",
+  "name": "CamillaDSP",
+  "version": "0.1.0",
+  "license": "MIT",
+  "description": "System-wide EQ and room correction through CamillaDSP, with on/off and preset switching from the Omarchy bar.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "CamillaDSP",
+    "description": "Route all audio through CamillaDSP, pick a preset, and watch load and clipping.",
+    "category": "Audio",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "hideWhenOff": false
+    },
+    "schema": [
+      {
+        "key": "hideWhenOff",
+        "type": "boolean",
+        "label": "Hide the icon while CamillaDSP is off",
+        "defaultValue": false
+      }
+    ]
+  }
+}

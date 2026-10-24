@@ -1,0 +1,23 @@
+[Unit]
+Description=CamillaDSP virtual output (Omarchy plugin)
+After=pipewire.service wireplumber.service
+Requires=pipewire.service
+Wants=wireplumber.service
+# The sink lives in the PipeWire daemon and goes away with it.
+PartOf=pipewire.service
+
+[Service]
+# Applications play into this sink; CamillaDSP captures its monitor. It is created
+# in the running daemon with object.linger, so turning CamillaDSP on and off never
+# restarts PipeWire, which would drop every PulseAudio client (Spotify and friends
+# do not reconnect).
+#
+# Volume belongs on the real output, after the processing, so the DSP always sees
+# the full-resolution signal: monitor.channel-volumes stays off, and Omarchy's
+# volume keys already resolve through this sink to the device it feeds.
+Type=oneshot
+RemainAfterExit=yes
+# A sink left behind by a crash would make the new one a duplicate.
+ExecStartPre=-/usr/bin/pw-cli destroy camilladsp
+ExecStart=/usr/bin/pw-cli create-node adapter '{ factory.name = support.null-audio-sink node.name = camilladsp node.description = CamillaDSP media.class = Audio/Sink audio.position = [ FL FR ] monitor.channel-volumes = false object.linger = true }'
+ExecStop=-/usr/bin/pw-cli destroy camilladsp
