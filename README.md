@@ -7,7 +7,7 @@ The idea comes from [Speaker Calibrator](https://github.com/thefreshoffice/omarc
 ## Install
 
 ```bash
-omarchy plugin add https://github.com/<you>/omarchy-camilladsp.git --enable
+omarchy plugin add https://github.com/C622/omarchy-camilladsp.git --enable
 ```
 
 Then click the sliders icon in the bar and press **Set up**. It opens a terminal because it may install packages:
