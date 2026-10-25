@@ -165,7 +165,9 @@ Panel {
     if (presetIndex >= 0 && presetIndex < presets.length) applyPreset(presets[presetIndex].id)
   }
 
-  ShellIpc {
+  // Quickshell's own IpcHandler rather than Omarchy's ShellIpc, which older
+  // Omarchy releases do not have. omarchy-shell falls back to qs ipc for it.
+  IpcHandler {
     target: "community.camilladsp"
 
     function open(): void { root.open() }
