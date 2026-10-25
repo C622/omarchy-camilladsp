@@ -44,6 +44,27 @@ Panel {
 
   // What the current Sound and Correction choices would do with the
   // measurements, worked out without saving anything (calibrate fit --preview).
+  // Folded sections, remembered in this widget's shell.json entry.
+  property bool presetsCollapsed: setting("presetsCollapsed", false) === true
+  property bool micCollapsed: setting("micCollapsed", false) === true
+
+  function setCollapsed(key, value) {
+    if (key === "presetsCollapsed") presetsCollapsed = value
+    else micCollapsed = value
+    var next = Object.assign({}, settings)
+    next[key] = value
+    if (bar && bar.shell && typeof bar.shell.updateEntryInline === "function")
+      bar.shell.updateEntryInline(moduleName, next)
+  }
+
+  // The switches act on calibrated presets built from a saved fit.
+  readonly property var activeFit: status && session && session.fits ? (session.fits[status.preset] || null) : null
+  readonly property var options: session && session.options ? session.options : ({})
+
+  function setOption(option, on) {
+    run(["calibrate", "option", option, on ? "on" : "off"])
+  }
+
   property var preview: null
   property string previewKey: ""
   property string previewRunningKey: ""
@@ -202,6 +223,16 @@ Panel {
     // is a click away in the list for comparison.
     if (exitCode === 0 && stage === "fit") run(["calibrate", "apply"])
     else refresh()
+  }
+
+  // A path through the points with rounded joins: each corner becomes a
+  // quadratic curve through the midpoints on either side of it.
+  function tracePath(ctx, pts) {
+    ctx.beginPath()
+    ctx.moveTo(pts[0].x, pts[0].y)
+    for (var i = 1; i < pts.length - 1; i++)
+      ctx.quadraticCurveTo(pts[i].x, pts[i].y, (pts[i].x + pts[i + 1].x) / 2, (pts[i].y + pts[i + 1].y) / 2)
+    ctx.lineTo(pts[pts.length - 1].x, pts[pts.length - 1].y)
   }
 
   function activateCursor() {
@@ -550,66 +581,106 @@ Panel {
             width: parent.width
             implicitHeight: Math.max(presetHeader.implicitHeight, editButton.implicitHeight)
 
-            PanelSectionHeader {
+            FoldHeader {
               id: presetHeader
               anchors.left: parent.left
+              anchors.right: editButton.visible ? editButton.left : parent.right
+              anchors.rightMargin: editButton.visible ? Style.space(8) : 0
               anchors.verticalCenter: parent.verticalCenter
               text: "Presets"
-              foreground: root.bar.foreground
-              fontFamily: root.bar.fontFamily
+              collapsed: root.presetsCollapsed
+              summary: root.status ? Model.presetTitle(root.status, root.status.preset) : ""
+              onToggled: root.setCollapsed("presetsCollapsed", !root.presetsCollapsed)
             }
 
             Button {
               id: editButton
-              anchors.right: parent.right
-              anchors.verticalCenter: parent.verticalCenter
-              text: "Edit"
-              iconText: "\uf044"
-              foreground: root.bar.foreground
-              fontFamily: root.bar.fontFamily
-              fontSize: Style.font.caption
-              onClicked: root.editPresets()
-            }
+              visible: !root.presetsCollapsed
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                text: "Edit"
+                iconText: "\uf044"
+                foreground: root.bar.foreground
+                fontFamily: root.bar.fontFamily
+                fontSize: Style.font.caption
+                onClicked: root.editPresets()
+              }
+          }
+
+          Column {
+            width: parent.width
+            spacing: Style.space(6)
+            visible: !root.presetsCollapsed
+
+            Repeater {
+              model: root.presets
+
+              Button {
+                id: presetButton
+                required property var modelData
+                required property int index
+                width: parent.width
+                leftAlign: true
+                // Long names (a calibration is named after the output) end in "…"
+                // instead of running past the panel: Button only elides on newer
+                // Omarchy releases, so the text is elided here.
+                text: presetName.elidedText
+                tooltipText: presetName.elidedText !== modelData.title ? modelData.title : ""
+                iconText: Model.isCalibrated(modelData.id) ? "\uf130" : ""
+                foreground: root.bar.foreground
+                fontFamily: root.bar.fontFamily
+                fontSize: Style.font.bodySmall
+                active: !!root.status && root.status.preset === modelData.id
+                hasCursor: root.cursorActive && root.presetIndex === index
+                enabled: !root.busy
+                onClicked: root.applyPreset(modelData.id)
+                onHovered: function(h) {
+                  if (h) {
+                    root.cursorActive = true
+                    root.presetIndex = index
+                  }
+                }
+
+                TextMetrics {
+                  id: presetName
+                  text: presetButton.modelData.title
+                  font.family: presetButton.fontFamily
+                  font.pixelSize: presetButton.fontSize
+                  elide: Text.ElideRight
+                  elideWidth: Math.max(0, presetButton.width - presetButton.horizontalPadding * 2
+                    - (presetButton.iconText !== "" ? presetButton.iconSize + Style.space(10) : 0) - Style.space(6))
+                }
+              }
+          }
+          }
+        }
+
+        // ---------- Calibrated sound: the four switches ----------
+        PanelSeparator { foreground: root.bar.foreground; visible: !!root.activeFit }
+
+        Column {
+          width: parent.width
+          spacing: Style.space(8)
+          visible: !!root.activeFit
+
+          PanelSectionHeader {
+            text: "Calibrated sound"
+            foreground: root.bar.foreground
+            fontFamily: root.bar.fontFamily
           }
 
           Repeater {
-            model: root.presets
+            model: Model.SWITCHES
 
-            Button {
-              id: presetButton
+            SwitchRow {
               required property var modelData
-              required property int index
-              width: parent.width
-              leftAlign: true
-              // Long names (a calibration is named after the output) end in "…"
-              // instead of running past the panel: Button only elides on newer
-              // Omarchy releases, so the text is elided here.
-              text: presetName.elidedText
-              tooltipText: presetName.elidedText !== modelData.title ? modelData.title : ""
-              iconText: Model.isCalibrated(modelData.id) ? "\uf130" : ""
-              foreground: root.bar.foreground
-              fontFamily: root.bar.fontFamily
-              fontSize: Style.font.bodySmall
-              active: !!root.status && root.status.preset === modelData.id
-              hasCursor: root.cursorActive && root.presetIndex === index
-              enabled: !root.busy
-              onClicked: root.applyPreset(modelData.id)
-              onHovered: function(h) {
-                if (h) {
-                  root.cursorActive = true
-                  root.presetIndex = index
-                }
-              }
-
-              TextMetrics {
-                id: presetName
-                text: presetButton.modelData.title
-                font.family: presetButton.fontFamily
-                font.pixelSize: presetButton.fontSize
-                elide: Text.ElideRight
-                elideWidth: Math.max(0, presetButton.width - presetButton.horizontalPadding * 2
-                  - (presetButton.iconText !== "" ? presetButton.iconSize + Style.space(10) : 0) - Style.space(6))
-              }
+              label: modelData.label
+              description: modelData.key === "deep_bass" && Model.fitKnee(root.activeFit) === 0
+                ? "These speakers reach the bottom of the measurement; there is no missing bass to suggest."
+                : modelData.description
+              checked: root.options[modelData.key] === true
+              available: modelData.key !== "deep_bass" || Model.fitKnee(root.activeFit) > 0
+              onSwitched: function(on) { root.setOption(modelData.option, on) }
             }
           }
         }
@@ -622,20 +693,28 @@ Panel {
           spacing: Style.space(10)
           visible: root.dspState !== "setup" && root.dspState !== "loading"
 
-          PanelSectionHeader {
+          FoldHeader {
+            width: parent.width
             text: "Calibrate with a microphone"
-            foreground: root.bar.foreground
-            fontFamily: root.bar.fontFamily
+            collapsed: root.micCollapsed
+            summary: Model.micSummary(root.micInfo, root.position)
+            onToggled: root.setCollapsed("micCollapsed", !root.micCollapsed)
           }
 
-          Dropdown {
+          // The microphone segment, down to where the sound is chosen.
+          Column {
             width: parent.width
-            label: "Microphone"
-            fontFamily: root.bar.fontFamily
-            options: root.micOptions
-            value: root.mic
-            enabled: !root.busy && root.measurementCount === 0
-            onChanged: function(v) { root.mic = v }
+            spacing: Style.space(10)
+            visible: !root.micCollapsed
+
+            Dropdown {
+              width: parent.width
+              label: "Microphone"
+              fontFamily: root.bar.fontFamily
+              options: root.micOptions
+              value: root.mic
+              enabled: !root.busy && root.measurementCount === 0
+              onChanged: function(v) { root.mic = v }
           }
 
           Dropdown {
@@ -663,6 +742,13 @@ Panel {
             onPicked: function(v) { root.position = v }
           }
 
+          Message {
+            text: root.position === "listening"
+              ? "Put the microphone where your head usually is. Measure from a few spots around it and the correction averages them, which also tames the room. Both speakers are time and level aligned to that spot."
+              : "Measures the speakers themselves: the room barely counts. The built-in microphone works for this."
+          }
+          }
+
           Choice {
             label: "Sound"
             options: [
@@ -687,12 +773,6 @@ Panel {
             ]
             value: root.mode
             onPicked: function(v) { root.mode = v }
-          }
-
-          Message {
-            text: root.position === "listening"
-              ? "Put the microphone where your head usually is. Measure from a few spots around it and the correction averages them, which also tames the room. Both speakers are time and level aligned to that spot."
-              : "Measures the speakers themselves: the room barely counts. The built-in microphone works for this."
           }
 
           ResponseGraph {
@@ -929,17 +1009,16 @@ Panel {
     onWidthChanged: requestPaint()
     onInkChanged: requestPaint()
 
-    function stroke(ctx, values, color, alpha, width, dashed) {
-      var pts = Model.curvePoints(grid, values, graph.width, graph.height, 15)
+    function stroke(ctx, values, color, alpha, width, dashed, smoothed) {
+      var pts = Model.curvePoints(grid, smoothed ? Model.smoothCurve(values, 2) : values, graph.width, graph.height, 15)
       if (pts.length < 2) return
       ctx.save()
       ctx.globalAlpha = alpha
       ctx.strokeStyle = color
       ctx.lineWidth = width
+      ctx.lineJoin = "round"
       if (dashed) ctx.setLineDash([4, 4])
-      ctx.beginPath()
-      ctx.moveTo(pts[0].x, pts[0].y)
-      for (var i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y)
+      root.tracePath(ctx, pts)
       ctx.stroke()
       ctx.restore()
     }
@@ -958,9 +1037,9 @@ Panel {
       }
       ctx.beginPath(); ctx.moveTo(0, height / 2); ctx.lineTo(width, height / 2); ctx.stroke()
       ctx.restore()
-      stroke(ctx, measured, ink, 0.35, 1.5, false)
-      stroke(ctx, targetCurve, accent, 0.9, 1.5, true)
-      stroke(ctx, planned, ink, 1.0, 2, false)
+      stroke(ctx, measured, ink, 0.35, 1.5, false, true)
+      stroke(ctx, targetCurve, accent, 0.9, 1.5, true, false)
+      stroke(ctx, planned, ink, 1.0, 2, false, true)
     }
 
     Text {
@@ -1009,9 +1088,7 @@ Panel {
         ctx.globalAlpha = names[n] === selected ? 1.0 : 0.3
         ctx.strokeStyle = names[n] === selected ? accent : ink
         ctx.lineWidth = names[n] === selected ? 2 : 1
-        ctx.beginPath()
-        ctx.moveTo(pts[0].x, pts[0].y)
-        for (var i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y)
+        root.tracePath(ctx, pts)
         ctx.stroke()
         ctx.restore()
       }
@@ -1030,6 +1107,119 @@ Panel {
         font.family: root.bar.fontFamily
         font.pixelSize: Style.font.caption
       }
+    }
+  }
+
+  // A section title that folds its section away, showing a one-line summary
+  // of it in its place.
+  component FoldHeader: Item {
+    id: fold
+    property string text: ""
+    property string summary: ""
+    property bool collapsed: false
+    signal toggled()
+
+    implicitHeight: Math.max(foldTitle.implicitHeight, chevron.implicitHeight)
+
+    Text {
+      id: chevron
+      anchors.left: parent.left
+      anchors.verticalCenter: parent.verticalCenter
+      width: Style.space(14)
+      text: fold.collapsed ? "\uf054" : "\uf078"
+      textFormat: Text.PlainText
+      color: root.bar.foreground
+      opacity: foldMouse.containsMouse ? 0.9 : 0.5
+      font.family: root.bar.fontFamily
+      font.pixelSize: Style.font.caption
+    }
+
+    PanelSectionHeader {
+      id: foldTitle
+      anchors.left: chevron.right
+      anchors.verticalCenter: parent.verticalCenter
+      text: fold.text
+      foreground: root.bar.foreground
+      fontFamily: root.bar.fontFamily
+    }
+
+    Text {
+      anchors.left: foldTitle.right
+      anchors.leftMargin: Style.space(10)
+      anchors.right: parent.right
+      anchors.verticalCenter: parent.verticalCenter
+      visible: fold.collapsed && fold.summary !== ""
+      text: fold.summary
+      textFormat: Text.PlainText
+      horizontalAlignment: Text.AlignRight
+      elide: Text.ElideRight
+      color: root.bar.foreground
+      opacity: 0.7
+      font.family: root.bar.fontFamily
+      font.pixelSize: Style.font.bodySmall
+    }
+
+    MouseArea {
+      id: foldMouse
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      onClicked: fold.toggled()
+    }
+  }
+
+  // A switch with its name and what it does.
+  component SwitchRow: Item {
+    id: row
+    property string label: ""
+    property string description: ""
+    property bool checked: false
+    property bool available: true
+    signal switched(bool on)
+
+    width: parent ? parent.width : 0
+    implicitHeight: Math.max(rowText.implicitHeight, toggle.implicitHeight)
+    opacity: available ? 1 : 0.5
+
+    Column {
+      id: rowText
+      anchors.left: parent.left
+      anchors.right: toggle.left
+      anchors.rightMargin: Style.space(12)
+      anchors.verticalCenter: parent.verticalCenter
+      spacing: Style.space(2)
+
+      Text {
+        width: parent.width
+        text: row.label
+        textFormat: Text.PlainText
+        color: root.bar.foreground
+        font.family: root.bar.fontFamily
+        font.pixelSize: Style.font.bodySmall
+        font.bold: true
+      }
+
+      Text {
+        width: parent.width
+        text: row.description
+        textFormat: Text.PlainText
+        wrapMode: Text.WordWrap
+        color: root.bar.foreground
+        opacity: 0.6
+        font.family: root.bar.fontFamily
+        font.pixelSize: Style.font.caption
+      }
+    }
+
+    ToggleSwitch {
+      id: toggle
+      anchors.right: parent.right
+      anchors.verticalCenter: parent.verticalCenter
+      checked: row.checked
+      busy: root.busy
+      interactive: row.available && !root.busy
+      foreground: root.bar.foreground
+      onToggled: row.switched(!row.checked)
     }
   }
 }

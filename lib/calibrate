@@ -8,6 +8,7 @@
   calibrate check                         replay through CamillaDSP and compare
   calibrate mic-cal --mic M (--file F | --clear)
                                           use a calibration file for a microphone
+  calibrate option NAME on|off            loudness, louder, deep-bass or calibration
   calibrate summary                       the session so far, as JSON
   calibrate reset                         forget the measurements
 
@@ -50,6 +51,44 @@ def preset_id(target, mode):
     name = target if target in TARGET_NAMES else os.path.splitext(os.path.basename(target))[0]
     slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "custom"
     return f"80-cal-{mode}-{slug}"
+
+
+OPTIONS = os.path.join(STATE, "calibration-options.json")
+
+
+def load_options():
+    return dict(dsp.DEFAULT_OPTIONS, **{k: v for k, v in (load_json(OPTIONS) or {}).items() if k in dsp.DEFAULT_OPTIONS})
+
+
+def preset_spec(fit):
+    """Everything a calibrated preset is written from, out of its saved fit.
+
+    Derived from the fit's report rather than stored separately, so presets
+    built before the switches existed can be rewritten with them too.
+    """
+    per_channel = [{"filters": c["filters"], "delay_ms": c.get("delay_ms", 0.0), "trim_db": c.get("trim_db", 0.0)}
+                   for c in fit["channels"]]
+    fir_files = ([os.path.join(FILTERS, f"{fit['preset']}-ch{ch}.wav") for ch in range(len(per_channel))]
+                 if fit["mode"] == "fir" else None)
+    knees = [c["knee"] for c in fit["channels"] if c.get("knee", 0) > 30]
+
+    def on_grid(values):
+        return np.interp(np.log(dsp.GRID), np.log(fit["grid"]), values)
+
+    # What the whole correction does, preamp included: planned minus measured.
+    corrections = [on_grid(c["predicted"]) - on_grid(c["measured"]) + fit["preamp_db"] for c in fit["channels"]]
+    return per_channel, fir_files, (min(knees) if knees else 0.0), dsp.correction_level(corrections)
+
+
+def write_preset(fit, options):
+    per_channel, fir_files, knee, level_db = preset_spec(fit)
+    text = dsp.preset_yaml(fit["title"], fit["description"], per_channel, fit["preamp_db"], fir_files,
+                           options=options, knee=knee, level_db=level_db)
+    preset = os.path.join(PRESETS, fit["preset"] + ".yml")
+    os.makedirs(PRESETS, exist_ok=True)
+    with open(preset + ".tmp", "w") as f:
+        f.write(text)
+    os.replace(preset + ".tmp", preset)
 
 
 def preset_title(target, mode):
@@ -513,7 +552,8 @@ def cmd_fit(args):
               f"{', aligned' if align else ''}, measured {session[-1]['time'][:10]}")
     fit = {"preset": pid, "title": title, "description": detail, "target": args.target, "mode": args.mode,
            "aligned": align, "preamp_db": preamp, "output": session[0]["output"], "mic": session[0]["mic"],
-           "positions": len(session), "grid": [round(float(f), 1) for f in dsp.GRID[::4]],
+           "positions": len(session), "position": session[-1]["position"],
+           "mic_calibration": session[0].get("mic_calibration", ""), "grid": [round(float(f), 1) for f in dsp.GRID[::4]],
            "target_curve": display(target), "channels": report,
            "time": datetime.datetime.now().isoformat(timespec="seconds")}
     # A preview shows what these settings would do and touches nothing: no
@@ -522,12 +562,7 @@ def cmd_fit(args):
         emit("result", preview=True, **fit)
         return
 
-    text = dsp.preset_yaml(title, detail, per_channel, preamp, fir_files)
-    preset = os.path.join(PRESETS, pid + ".yml")
-    os.makedirs(PRESETS, exist_ok=True)
-    with open(preset + ".tmp", "w") as f:
-        f.write(text)
-    os.replace(preset + ".tmp", preset)
+    write_preset(fit, load_options())
     # Each preset keeps the fit it was built from, and the check made of it,
     # so each can be checked and shown on its own. fit.json is the latest.
     save_json(os.path.join(SESSION, "fits", pid + ".json"), fit)
@@ -565,8 +600,8 @@ def cmd_check(args):
     # The check must use the same microphone and speaker as the calibration;
     # another one would measure the difference between two microphones.
     session = measurements()
-    position = session[-1]["position"] if session else "nearfield"
-    calibration = session[0].get("mic_calibration", "") if session else ""
+    position = session[-1]["position"] if session else fit.get("position", "nearfield")
+    calibration = session[0].get("mic_calibration", "") if session else fit.get("mic_calibration", "")
 
     # Measure twice at the same spot, straight to the output and then through
     # CamillaDSP. The plan is the average of every position measured, and one
@@ -626,7 +661,8 @@ def cmd_summary(_args):
            "fit": load_json(os.path.join(SESSION, "fit.json")),
            "check": load_json(os.path.join(SESSION, "check.json")),
            "fits": _by_preset("fits"),
-           "checks": _by_preset("checks")}
+           "checks": _by_preset("checks"),
+           "options": load_options()}
     if session:
         combined = dsp.combine(session)
         out["grid"] = [round(float(f), 1) for f in dsp.GRID[::4]]
@@ -645,12 +681,23 @@ def _by_preset(folder):
     return out
 
 
+def cmd_option(args):
+    """Turn one of the four switches on or off and rewrite every calibrated preset."""
+    options = load_options()
+    options[args.name.replace("-", "_")] = args.value == "on"
+    save_json(OPTIONS, options)
+    rewritten = []
+    for pid, fit in _by_preset("fits").items():
+        if fit and fit.get("channels"):
+            write_preset(fit, options)
+            rewritten.append(pid)
+    print(json.dumps({"options": options, "rewritten": rewritten}))
+
+
 def cmd_reset(_args, quiet=False):
-    # The presets stay: they are finished calibrations. What goes is what ties
-    # them to these measurements, since new ones start a new session.
+    # The presets stay, and so do the fits they were written from, which the
+    # switches rewrite them from. Only the measurements go.
     shutil.rmtree(os.path.join(SESSION, "measurements"), ignore_errors=True)
-    shutil.rmtree(os.path.join(SESSION, "fits"), ignore_errors=True)
-    shutil.rmtree(os.path.join(SESSION, "checks"), ignore_errors=True)
     for name in ("fit.json", "check.json"):
         try:
             os.remove(os.path.join(SESSION, name))
@@ -679,12 +726,16 @@ def main():
     group = c.add_mutually_exclusive_group(required=True)
     group.add_argument("--file")
     group.add_argument("--clear", action="store_true")
+    o = sub.add_parser("option")
+    o.add_argument("name", choices=["loudness", "louder", "deep-bass", "calibration"])
+    o.add_argument("value", choices=["on", "off"])
     sub.add_parser("summary")
     sub.add_parser("reset")
     args = parser.parse_args()
 
     commands = {"devices": cmd_devices, "measure": cmd_measure, "fit": cmd_fit, "check": cmd_check,
-                "summary": cmd_summary, "reset": cmd_reset, "mic-cal": cmd_mic_cal}
+                "summary": cmd_summary, "reset": cmd_reset, "mic-cal": cmd_mic_cal,
+                "option": cmd_option}
     try:
         commands[args.command](args)
     except (Refused, dsp.MeasurementError) as error:

@@ -203,6 +203,48 @@ class MicCalibrationTest(unittest.TestCase):
         self.assertLess(treble_error(corrected), 2)
 
 
+class SwitchesTest(unittest.TestCase):
+    PER = [{"filters": [{"type": "Highpass", "freq": 90.0, "q": 0.707},
+                        {"type": "Peaking", "freq": 200.0, "gain": -6.0, "q": 2.0}], "delay_ms": 0.0, "trim_db": 0.0}] * 2
+
+    def preset(self, **options):
+        return dsp.preset_yaml("t", "d", self.PER, -0.5, options=options, knee=90.0, level_db=-3.0)
+
+    def test_defaults_are_the_plain_calibration(self):
+        text = self.preset()
+        self.assertIn("ch0_peaking_1", text)
+        for name in ("loudness", "deep_bass", "makeup", "limiter", "level_match"):
+            self.assertNotIn(name + ":", text)
+
+    def test_calibration_off_is_level_matched(self):
+        text = self.preset(calibration=False)
+        self.assertNotIn("ch0_peaking", text)
+        self.assertIn("level_match:", text)
+        self.assertIn("gain: -3.0", text)
+
+    def test_louder_gives_back_what_the_correction_took(self):
+        text = self.preset(louder=True)
+        self.assertIn("makeup:", text)
+        self.assertIn("gain: 3.0", text)
+        self.assertIn("limiter:", text)
+        self.assertIn("soft_clip: false", text)
+
+    def test_deep_bass_needs_a_knee(self):
+        self.assertIn("deep_bass_split", self.preset(deep_bass=True))
+        text = dsp.preset_yaml("t", "d", self.PER, -0.5, options={"deep_bass": True}, knee=0.0, level_db=-3.0)
+        self.assertNotIn("deep_bass", text)
+
+    def test_loudness_follows_the_external_fader(self):
+        text = self.preset(loudness=True)
+        self.assertIn("type: Loudness", text)
+        self.assertIn("fader: Aux1", text)
+        self.assertIn("attenuate_mid: true", text)
+
+    def test_correction_level_is_the_midband_mean(self):
+        corr = np.where((dsp.GRID >= 200) & (dsp.GRID <= 5000), -4.0, 10.0)
+        self.assertAlmostEqual(dsp.correction_level([corr, corr]), -4.0)
+
+
 class SafetyTest(unittest.TestCase):
     def test_clipping_is_refused(self):
         played, schedule = dsp.excitation(level_db=-12)

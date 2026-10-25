@@ -249,6 +249,59 @@ function logGrid(count) {
   return out
 }
 
+// Gentle smoothing for drawing: a triangular average over radius points
+// either side. The panel's curves have 12 points per octave, so radius 2 is
+// about a third of an octave: it softens spikes without hiding a resonance.
+function smoothCurve(values, radius) {
+  var r = radius === undefined ? 2 : radius
+  var out = []
+  for (var i = 0; i < (values || []).length; i++) {
+    var sum = 0, weight = 0
+    for (var k = -r; k <= r; k++) {
+      var j = i + k
+      if (j < 0 || j >= values.length) continue
+      var w = r + 1 - Math.abs(k)
+      sum += (Number(values[j]) || 0) * w
+      weight += w
+    }
+    out.push(sum / weight)
+  }
+  return out
+}
+
+// One line for the microphone segment when it is folded away.
+function micSummary(mic, position) {
+  if (!mic) return ""
+  var parts = [String(mic.description || mic.name).replace(/\s+/g, " ")]
+  if (mic.calibration) parts.push(/90/.test(mic.calibration.file) ? "90° file" : "calibrated")
+  parts.push(position === "listening" ? "where I sit" : "near the speakers")
+  return parts.join(" · ")
+}
+
+// The switches a calibrated preset can carry (lib/calibrate option).
+var SWITCHES = [
+  { key: "loudness", option: "loudness", label: "Loudness",
+    description: "Fuller sound at low volume, like the loudness button on a stereo. Follows the output's volume." },
+  { key: "louder", option: "louder", label: "Make it louder",
+    description: "Gives back the volume the correction takes away. A limiter catches the peaks." },
+  { key: "deep_bass", option: "deep-bass", label: "Deep bass",
+    description: "Suggests low notes the speakers cannot play, using their harmonics." },
+  { key: "calibration", option: "calibration", label: "Calibration",
+    description: "Off plays the plain speakers, level matched, so only the tone changes." }
+]
+
+// The lowest bass limit any channel of a fit found; 0 when the speakers
+// reach the bottom of the measurement, where Deep bass has nothing to add.
+function fitKnee(fit) {
+  var knee = 0
+  var channels = (fit && fit.channels) || []
+  for (var i = 0; i < channels.length; i++) {
+    var k = Number(channels[i].knee) || 0
+    if (k > 30 && (knee === 0 || k < knee)) knee = k
+  }
+  return knee
+}
+
 // Average the channels into one curve for the graph.
 function meanCurve(curves) {
   if (!curves || curves.length === 0) return []
@@ -267,6 +320,7 @@ if (typeof module !== "undefined") {
     heroStatus: heroStatus, outputLabel: outputLabel, bypassReason: bypassReason, clipped: clipped,
     tooltip: tooltip, usableMics: usableMics, micInfo: micInfo, calibrationOptions: calibrationOptions, calibrationPath: calibrationPath,
     isMeasurementMic: isMeasurementMic, calibrationHint: calibrationHint, event: event, fitSummary: fitSummary,
-    checkSummary: checkSummary, curvePoints: curvePoints, targetDb: targetDb, targetCurve: targetCurve, logGrid: logGrid, frequencyX: frequencyX, meanCurve: meanCurve
+    checkSummary: checkSummary, curvePoints: curvePoints, smoothCurve: smoothCurve, micSummary: micSummary,
+    SWITCHES: SWITCHES, fitKnee: fitKnee, targetDb: targetDb, targetCurve: targetCurve, logGrid: logGrid, frequencyX: frequencyX, meanCurve: meanCurve
   }
 }

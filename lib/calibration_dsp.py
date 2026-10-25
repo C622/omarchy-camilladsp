@@ -698,41 +698,123 @@ def preamp_for(corrections):
     return -round(max(peak, 0.0) + PREAMP_MARGIN, 2)
 
 
-def preset_yaml(title, description, per_channel, preamp_db, fir_files=None):
-    """CamillaDSP preset: a shared preamp, then one filter step per channel.
+# The four switches on a calibrated preset (see preset_yaml).
+DEFAULT_OPTIONS = {"loudness": False, "louder": False, "deep_bass": False, "calibration": True}
+# Loudness compensation follows the output's own volume, sent by
+# lib/loudness-tracker to fader Aux1. Full boost 20 dB below the reference.
+LOUDNESS_FADER = "Aux1"
+LOUDNESS = {"reference_level": -5.0, "low_boost": 6.0, "high_boost": 3.0}
+# Deep bass: what lies below the knee is driven into a hard clipper, and the
+# harmonics it makes between the knee and three times the knee are mixed back.
+DEEP_BASS_DRIVE_DB = 18.0
+DEEP_BASS_CLIP_DB = -10.0
+DEEP_BASS_MIX_DB = -12.0
+MAX_MAKEUP_DB = 6.0
+LIMIT_DB = -1.0
+
+
+def correction_level(corrections):
+    """How much the whole correction turns the sound down, in dB.
+
+    The mean gain over the band that carries most of the loudness, 200 Hz to
+    5 kHz, averaged over the channels. Negative when the correction is
+    mostly cuts. "Make it louder" gives this back; "Calibration" off plays the
+    plain speakers this much quieter, so switching only changes the tone.
+    """
+    band = (GRID >= 200) & (GRID <= 5000)
+    return round(float(np.mean([np.mean(np.asarray(c)[band]) for c in corrections])), 2)
+
+
+def preset_yaml(title, description, per_channel, preamp_db, fir_files=None, options=None, knee=0.0, level_db=0.0):
+    """CamillaDSP preset for a calibration, with its four switches applied.
 
     per_channel: list of dicts with "filters" (PEQ list), "delay_ms", "trim_db".
     fir_files: optional list of WAV paths, one per channel.
+    options: the switches (DEFAULT_OPTIONS for keys). knee is the lowest
+    knee of the channels, level_db what correction_level() reported.
+
+    Order: loudness, deep bass (ahead of the correction, so the EQ shapes the
+    harmonics too), preamp, the per-channel correction, then make-up gain and a
+    limiter whenever anything can push the signal past full scale.
     """
-    lines = [f"title: {yaml_str(title)}", f"description: {yaml_str(description)}", "filters:"]
-    lines += ["  preamp:", "    type: Gain", "    parameters:", f"      gain: {preamp_db}"]
-    steps = ["  - type: Filter", "    names: [preamp]"]
-    for ch, spec in enumerate(per_channel):
-        names = []
-        for k, f in enumerate(spec["filters"]):
-            name = f"ch{ch}_{f['type'].lower()}_{k}"
-            names.append(name)
-            lines += [f"  {name}:", "    type: Biquad", "    parameters:", f"      type: {f['type']}",
-                      f"      freq: {round(f['freq'], 1)}"]
-            if f["type"] != "Highpass":
-                lines.append(f"      gain: {round(f['gain'], 2)}")
-            lines.append(f"      q: {round(f['q'], 3)}")
-        if fir_files:
-            name = f"ch{ch}_fir"
-            names.append(name)
-            lines += [f"  {name}:", "    type: Conv", "    parameters:", "      type: Wav",
-                      f"      filename: {yaml_str(fir_files[ch])}"]
-        if spec.get("delay_ms"):
-            name = f"ch{ch}_delay"
-            names.append(name)
-            lines += [f"  {name}:", "    type: Delay", "    parameters:", f"      delay: {spec['delay_ms']}",
-                      "      unit: ms", "      subsample: true"]
-        if spec.get("trim_db"):
-            name = f"ch{ch}_trim"
-            names.append(name)
-            lines += [f"  {name}:", "    type: Gain", "    parameters:", f"      gain: {spec['trim_db']}"]
-        if names:
-            steps += ["  - type: Filter", f"    channels: [{ch}]", f"    names: [{', '.join(names)}]"]
+    opts = dict(DEFAULT_OPTIONS, **(options or {}))
+    channels = len(per_channel)
+    filters, mixers, steps = [], [], []
+
+    def add_filter(name, kind, **params):
+        filters.extend([f"  {name}:", f"    type: {kind}", "    parameters:"])
+        filters.extend(f"      {k}: {v}" for k, v in params.items())
+        return name
+
+    def filter_step(names, chans=None):
+        steps.append("  - type: Filter")
+        if chans is not None:
+            steps.append(f"    channels: [{', '.join(str(c) for c in chans)}]")
+        steps.append(f"    names: [{', '.join(names)}]")
+
+    if opts["loudness"]:
+        filter_step([add_filter("loudness", "Loudness", fader=LOUDNESS_FADER, attenuate_mid="true",
+                                **LOUDNESS)])
+
+    deep_bass = opts["deep_bass"] and knee > 30
+    if deep_bass:
+        # Each channel gets a copy on channel + n that becomes its harmonics.
+        mixers += ["  deep_bass_split:", "    channels:", f"      in: {channels}", f"      out: {channels * 2}",
+                   "    mapping:"]
+        for dest in range(channels * 2):
+            mixers += [f"      - dest: {dest}", "        sources:", f"          - channel: {dest % channels}"]
+        mixers += ["  deep_bass_join:", "    channels:", f"      in: {channels * 2}", f"      out: {channels}",
+                   "    mapping:"]
+        for dest in range(channels):
+            mixers += [f"      - dest: {dest}", "        sources:", f"          - channel: {dest}",
+                       f"          - channel: {dest + channels}", f"            gain: {DEEP_BASS_MIX_DB}"]
+        steps += ["  - type: Mixer", "    name: deep_bass_split"]
+        names = [add_filter("deep_bass_below", "Biquad", type="Lowpass", freq=round(knee, 1), q=0.707),
+                 add_filter("deep_bass_drive", "Gain", gain=DEEP_BASS_DRIVE_DB),
+                 add_filter("deep_bass_clip", "Limiter", soft_clip="false", clip_limit=DEEP_BASS_CLIP_DB),
+                 # Two high-passes: the fundamentals the clipper was fed must not
+                 # come back, only what it made above them.
+                 add_filter("deep_bass_above", "Biquad", type="Highpass", freq=round(knee, 1), q=0.707),
+                 add_filter("deep_bass_above2", "Biquad", type="Highpass", freq=round(knee, 1), q=0.707),
+                 add_filter("deep_bass_top", "Biquad", type="Lowpass", freq=round(knee * 3, 1), q=0.707)]
+        filter_step(names, range(channels, channels * 2))
+        steps += ["  - type: Mixer", "    name: deep_bass_join"]
+
+    if opts["calibration"]:
+        filter_step([add_filter("preamp", "Gain", gain=preamp_db)])
+        for ch, spec in enumerate(per_channel):
+            names = []
+            for k, f in enumerate(spec["filters"]):
+                params = {"type": f["type"], "freq": round(f["freq"], 1)}
+                if f["type"] != "Highpass":
+                    params["gain"] = round(f["gain"], 2)
+                params["q"] = round(f["q"], 3)
+                names.append(add_filter(f"ch{ch}_{f['type'].lower()}_{k}", "Biquad", **params))
+            if fir_files:
+                names.append(add_filter(f"ch{ch}_fir", "Conv", type="Wav", filename=yaml_str(fir_files[ch])))
+            if spec.get("delay_ms"):
+                names.append(add_filter(f"ch{ch}_delay", "Delay", delay=spec["delay_ms"], unit="ms",
+                                        subsample="true"))
+            if spec.get("trim_db"):
+                names.append(add_filter(f"ch{ch}_trim", "Gain", gain=spec["trim_db"]))
+            if names:
+                filter_step(names, [ch])
+    elif level_db:
+        # The plain speakers, as loud as the calibration plays them.
+        filter_step([add_filter("level_match", "Gain", gain=level_db)])
+
+    makeup = min(max(-level_db, 0.0), MAX_MAKEUP_DB) if opts["louder"] else 0.0
+    if makeup:
+        filter_step([add_filter("makeup", "Gain", gain=round(makeup, 2))])
+    if opts["louder"] or deep_bass or opts["loudness"]:
+        # Hard clipping: CamillaDSP's soft clip bends the signal well below the
+        # limit, which measured as distortion on clean music; hard leaves
+        # everything under -1 dBFS untouched.
+        filter_step([add_filter("limiter", "Limiter", soft_clip="false", clip_limit=LIMIT_DB)])
+
+    lines = [f"title: {yaml_str(title)}", f"description: {yaml_str(description)}", "filters:"] + filters
+    if mixers:
+        lines += ["mixers:"] + mixers
     return "\n".join(lines + ["pipeline:"] + steps) + "\n"
 
 

@@ -100,6 +100,19 @@ const tests = {
     assert.ok(!M.isCalibrated("10-bass-boost"))
     assert.ok(!M.isCalibrated("80-calibrated-but-mine"))
   },
+  "smoothing softens spikes and keeps flat curves flat"() {
+    assert.deepStrictEqual(M.smoothCurve([1, 1, 1, 1, 1]), [1, 1, 1, 1, 1])
+    const spike = M.smoothCurve([0, 0, 0, 9, 0, 0, 0])
+    assert.ok(spike[3] < 4 && spike[2] > 0 && spike[4] > 0)
+    assert.strictEqual(spike.length, 7)
+  },
+  "mic summary and switches"() {
+    const mic = { description: "Umik-1  Gain  18dB Analog Stereo", calibration: { file: "7157757_90deg.txt" } }
+    assert.strictEqual(M.micSummary(mic, "listening"), "Umik-1 Gain 18dB Analog Stereo · 90° file · where I sit")
+    assert.deepStrictEqual(M.SWITCHES.map(s => s.option), ["loudness", "louder", "deep-bass", "calibration"])
+    assert.strictEqual(M.fitKnee({ channels: [{ knee: 0 }, { knee: 95 }, { knee: 80 }] }), 80)
+    assert.strictEqual(M.fitKnee({ channels: [{ knee: 0 }] }), 0)
+  },
   "curve points span the box and clamp"() {
     const pts = M.curvePoints([20, 200, 2000, 20000], [0, 15, -15, 40], 300, 100, 15)
     assert.strictEqual(pts[0].x, 0)

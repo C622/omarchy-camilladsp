@@ -1,0 +1,85 @@
+#!/usr/bin/python3 -I
+
+"""Tell CamillaDSP's loudness compensation how loud the output is playing.
+
+  loudness-tracker <websocket-port> <state-dir>
+
+Hearing loses bass and treble as the level drops, so quiet music sounds thin.
+The Loudness filter in a calibrated preset puts that back, but only knows how
+much to when it is told the listening level, and with Omarchy that level is
+the real output's volume, set after CamillaDSP. This watches that volume and
+sends it to the filter's fader as an external volume.
+
+It reacts to PulseAudio events instead of polling, and re-reads the output
+CamillaDSP plays to on every change, so switching outputs is followed too.
+"""
+
+import os
+import re
+import select
+import subprocess
+import sys
+import time
+
+FADER = 1  # Aux1, LOUDNESS_FADER in calibration_dsp.py
+HERE = os.path.dirname(os.path.realpath(__file__))
+
+
+def target(state_dir):
+    try:
+        with open(os.path.join(state_dir, "target")) as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def volume_db(sink):
+    """The sink's volume in dB, the loudest channel; -100 when muted."""
+    mute = subprocess.run(["pactl", "get-sink-mute", sink], capture_output=True, text=True, timeout=5).stdout
+    if "yes" in mute:
+        return -100.0
+    out = subprocess.run(["pactl", "get-sink-volume", sink], capture_output=True, text=True, timeout=5).stdout
+    values = [-100.0 if v == "-inf" else float(v) for v in re.findall(r"(-inf|-?\d+(?:\.\d+)?) dB", out)]
+    return max(values) if values else None
+
+
+def send(port, db):
+    command = '{"SetFaderExternalVolume": [%d, %.2f]}' % (FADER, max(db, -100.0))
+    result = subprocess.run([sys.executable, "-I", os.path.join(HERE, "camilla-ws"), str(port), command],
+                            capture_output=True, text=True, timeout=5)
+    return result.returncode == 0 and '"Ok"' in result.stdout
+
+
+def main():
+    port, state_dir = int(sys.argv[1]), sys.argv[2]
+    last = None
+    while True:
+        events = subprocess.Popen(["pactl", "subscribe"], stdout=subprocess.PIPE, text=True)
+        pending = True
+        while events.poll() is None:
+            if pending:
+                sink = target(state_dir)
+                db = volume_db(sink) if sink else None
+                # CamillaDSP may still be starting; keep trying until it answers.
+                if db is not None and db != last:
+                    last = db if send(port, db) else None
+                pending = last is None and db is not None
+            ready, _, _ = select.select([events.stdout], [], [], 1.0 if pending else None)
+            if ready:
+                line = events.stdout.readline()
+                if not line:
+                    break
+                if "on sink #" in line or "on server" in line:
+                    pending = True
+                    # A volume drag is a burst of events; read it as one.
+                    while select.select([events.stdout], [], [], 0.05)[0]:
+                        if not events.stdout.readline():
+                            break
+        events.kill()
+        # The audio server went away; wait for it to come back.
+        last = None
+        time.sleep(2)
+
+
+if __name__ == "__main__":
+    main()

@@ -42,6 +42,17 @@ Write your own, or drop in a full config from elsewhere: any `devices:` block is
 4. **Build.** Choose a sound (**Neutral**, **Warm**, or **Room**, a gentle in-room curve with more bass) and a correction (**Parametric EQ** or **FIR**). The strip under Sound shows the three targets, and the graph previews what the chosen combination would do before anything is saved. Build fits it, saves it as a preset named after the combination, such as *Calibrated EQ · Neutral*, and turns it on. Every combination gets its own preset, so build a few and switch between them, or back to *Flat*, in the preset list. Rebuilding a combination replaces only that one.
 5. **Check.** Plays the sweeps through CamillaDSP and measures what actually comes out, against the target and against what was planned.
 
+### The four switches
+
+When a calibrated preset is playing, the panel shows four switches under **Calibrated sound**. They apply to every calibrated preset, which is rewritten from its saved fit, so switching is instant and nothing has to be measured again.
+
+| Switch | What it does |
+|---|---|
+| **Loudness** | Fuller sound at low volume, like the loudness button on a stereo. A small service follows the output's own volume and feeds it to CamillaDSP's `Loudness` filter, which boosts bass and treble as you turn down. It lowers the mids rather than boosting the ends, so it can't clip after the volume control. |
+| **Make it louder** | Gives back the volume the correction takes away, up to 6 dB, with a limiter at −1 dBFS to catch peaks. |
+| **Deep bass** | Suggests low notes the speakers can't play. What lies below the measured bass limit is driven into a clipper, and the harmonics between the limit and three times it are mixed back ahead of the EQ, the bankstown recipe built from CamillaDSP's own mixers, biquads and limiter. Only offered when the measurement found a bass limit. |
+| **Calibration** | Off plays the plain speakers, level matched to the calibration, so only the tone changes. |
+
 ### Microphone calibration files (UMIK-1 and friends)
 
 Measurement microphones come with a calibration file describing their own small errors. Download yours (miniDSP names UMIK files by serial number) into `~/Downloads` or `~/.config/camilladsp/mic-calibration/`. The panel then offers it under **Microphone calibration**. It remembers which file goes with which microphone and applies it to every measurement and check.
@@ -71,6 +82,8 @@ miniDSP's format (the `"Sens Factor =…, SERNO: …"` header) and REW-style `.t
 - **Cross-validation.** A filter has to improve each repeat on its own, not only their average, or it is removed.
 - **Budget**: at most −12 dB per filter and +6 dB of boost, at most −15/+6 dB of total correction at any frequency, and a preamp that keeps the loudest corrected frequency 0.5 dB below full scale.
 - **FIR mode** turns the same smoothed correction into an 8192-tap minimum-phase filter per channel (CamillaDSP `Conv`). It fills dips only halfway and fades out past the measured band.
+
+Click **Presets** or **Calibrate with a microphone** to fold that section away; it then shows just the current preset, or the microphone in use, and stays folded the next time you open the panel.
 
 ## Hotkeys and IPC
 

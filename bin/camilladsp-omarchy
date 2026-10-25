@@ -27,6 +27,8 @@ stale_sink_config="$config_home/pipewire/omarchy-camilladsp-sink.conf"
 
 service=omarchy-camilladsp.service
 sink_service=omarchy-camilladsp-sink.service
+loudness_service=omarchy-camilladsp-loudness.service
+options_file="$state_dir/calibration-options.json"
 sink_name=camilladsp
 capture_node=camilladsp-capture
 playback_node=camilladsp-playback
@@ -57,6 +59,7 @@ Usage: camilladsp-omarchy <command>
   calibrate <command>    Measure with a microphone and build a preset:
                            devices | measure --output O --mic M [--position nearfield|listening]
                            fit [--target flat|warm|room|FILE] [--mode peq|fir] [--preview] | apply [id] | check
+                           option <loudness|louder|deep-bass|calibration> <on|off>
                            summary | reset
   uninstall              Turn off and remove the services and sink (presets are kept)
 USAGE
@@ -374,6 +377,44 @@ dsp_query() {
   python "$plugin_dir/lib/camilla-ws" "$port" "$@"
 }
 
+# ---------- Calibrated sound switches ----------
+
+option_on() {
+  [[ $(jq -r --arg name "$1" '.[$name] // false' "$options_file" 2>/dev/null) == "true" ]]
+}
+
+is_calibrated_preset() {
+  [[ $1 == 80-cal-* || $1 == "80-calibrated" ]]
+}
+
+install_loudness_unit() {
+  sed -e "s|@PLUGIN@|$plugin_dir|" -e "s|@PORT@|$port|" -e "s|@STATE_DIR@|$state_dir|g" \
+    "$plugin_dir/templates/$loudness_service" >"$unit_dir/$loudness_service.tmp"
+  if cmp -s "$unit_dir/$loudness_service.tmp" "$unit_dir/$loudness_service"; then
+    rm -f "$unit_dir/$loudness_service.tmp"
+  else
+    mv "$unit_dir/$loudness_service.tmp" "$unit_dir/$loudness_service"
+    systemctl --user daemon-reload
+  fi
+}
+
+# The tracker feeds the output volume to the Loudness filter. It is wanted by
+# CamillaDSP while the Loudness switch is on, so it starts and stops with it.
+sync_loudness_tracker() {
+  if option_on loudness; then
+    install_loudness_unit
+    if [[ $(service_state) == "active" ]]; then
+      # Restarted so it sends the volume again: a reload resets the fader.
+      systemctl --user enable "$loudness_service" >/dev/null 2>&1
+      systemctl --user restart "$loudness_service" >/dev/null 2>&1
+    else
+      systemctl --user enable "$loudness_service" >/dev/null 2>&1
+    fi
+  elif [[ -f $unit_dir/$loudness_service ]]; then
+    systemctl --user disable --now "$loudness_service" >/dev/null 2>&1
+  fi
+}
+
 # ---------- Commands ----------
 
 cmd_setup() {
@@ -445,6 +486,7 @@ cmd_on() {
   # Check again once WirePlumber has reacted to the new default.
   sleep 0.5
   ensure_links "$target"
+  sync_loudness_tracker
 
   refresh_shell
   echo "CamillaDSP is on: $(preset_title "$preset") -> $(sink_description "$target" || echo "$target")"
@@ -496,6 +538,7 @@ cmd_preset() {
     systemctl --user reload "$service"
     pin_output "$target"
     ensure_links "$target" >/dev/null 2>&1 || true
+    sync_loudness_tracker
   fi
 
   refresh_shell
@@ -598,8 +641,21 @@ cmd_calibrate() {
       cmd_preset "$id" >/dev/null
       cmd_on
       ;;
+    option)
+      # Rewrite the calibrated presets with the switch, then reload the one
+      # playing, if it is one of them.
+      python "$plugin_dir/lib/calibrate" "$@" || return 1
+      local active
+      active="$(current_preset)"
+      if is_calibrated_preset "$active"; then
+        cmd_preset "$active" >/dev/null
+      else
+        sync_loudness_tracker
+      fi
+      refresh_shell
+      ;;
     "")
-      fail "usage: camilladsp-omarchy calibrate <devices|measure|fit|apply|check|summary|reset>"
+      fail "usage: camilladsp-omarchy calibrate <devices|measure|fit|apply|check|option|summary|reset>"
       ;;
     *)
       python "$plugin_dir/lib/calibrate" "$@"
@@ -612,7 +668,8 @@ cmd_calibrate() {
 
 cmd_uninstall() {
   cmd_off >/dev/null
-  rm -f "$unit_dir/$service" "$unit_dir/$sink_service" "$stale_sink_config" "$wireplumber_rule"
+  systemctl --user disable --now "$loudness_service" >/dev/null 2>&1
+  rm -f "$unit_dir/$service" "$unit_dir/$sink_service" "$unit_dir/$loudness_service" "$stale_sink_config" "$wireplumber_rule"
   systemctl --user daemon-reload
   refresh_shell
   echo "Removed the CamillaDSP services and sink. Presets stay in $presets_dir."

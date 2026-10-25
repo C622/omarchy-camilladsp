@@ -1,0 +1,14 @@
+[Unit]
+Description=CamillaDSP loudness compensation follows the output volume (Omarchy plugin)
+After=omarchy-camilladsp.service
+# Runs only while CamillaDSP does, and comes back with it.
+BindsTo=omarchy-camilladsp.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 -I @PLUGIN@/lib/loudness-tracker @PORT@ @STATE_DIR@
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=omarchy-camilladsp.service
