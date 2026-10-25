@@ -280,13 +280,13 @@ function micSummary(mic, position) {
 
 // The switches a calibrated preset can carry (lib/calibrate option).
 var SWITCHES = [
-  { key: "loudness", option: "loudness", label: "Loudness",
+  { key: "loudness", option: "loudness", label: "Loudness", color: "yellow",
     description: "Fuller sound at low volume, like the loudness button on a stereo. Follows the output's volume." },
-  { key: "louder", option: "louder", label: "Make it louder",
+  { key: "louder", option: "louder", label: "Make it louder", color: "orange",
     description: "Gives back the volume the correction takes away. A limiter catches the peaks." },
-  { key: "deep_bass", option: "deep-bass", label: "Deep bass",
+  { key: "deep_bass", option: "deep-bass", label: "Deep bass", color: "magenta",
     description: "Suggests low notes the speakers cannot play, using their harmonics." },
-  { key: "calibration", option: "calibration", label: "Calibration",
+  { key: "calibration", option: "calibration", label: "Calibration", color: "green",
     description: "Off plays the plain speakers, level matched, so only the tone changes." }
 ]
 
@@ -300,6 +300,18 @@ function fitKnee(fit) {
     if (k > 30 && (knee === 0 || k < knee)) knee = k
   }
   return knee
+}
+
+// The theme's palette from its colors.toml ("red = \"#f38ba8\"" lines), so
+// the panel's colours follow the theme the way the rest of the shell does.
+function themeColors(text) {
+  var out = {}
+  var lines = String(text || "").split("\n")
+  for (var i = 0; i < lines.length; i++) {
+    var m = /^\s*([a-z_]+)\s*=\s*"(#[0-9a-fA-F]{6}(?:[0-9a-fA-F]{2})?)"/.exec(lines[i])
+    if (m) out[m[1]] = m[2]
+  }
+  return out
 }
 
 // Average the channels into one curve for the graph.
@@ -321,6 +333,6 @@ if (typeof module !== "undefined") {
     tooltip: tooltip, usableMics: usableMics, micInfo: micInfo, calibrationOptions: calibrationOptions, calibrationPath: calibrationPath,
     isMeasurementMic: isMeasurementMic, calibrationHint: calibrationHint, event: event, fitSummary: fitSummary,
     checkSummary: checkSummary, curvePoints: curvePoints, smoothCurve: smoothCurve, micSummary: micSummary,
-    SWITCHES: SWITCHES, fitKnee: fitKnee, targetDb: targetDb, targetCurve: targetCurve, logGrid: logGrid, frequencyX: frequencyX, meanCurve: meanCurve
+    SWITCHES: SWITCHES, fitKnee: fitKnee, themeColors: themeColors, targetDb: targetDb, targetCurve: targetCurve, logGrid: logGrid, frequencyX: frequencyX, meanCurve: meanCurve
   }
 }

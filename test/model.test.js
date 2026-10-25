@@ -113,6 +113,11 @@ const tests = {
     assert.strictEqual(M.fitKnee({ channels: [{ knee: 0 }, { knee: 95 }, { knee: 80 }] }), 80)
     assert.strictEqual(M.fitKnee({ channels: [{ knee: 0 }] }), 0)
   },
+  "theme palette is read from colors.toml"() {
+    const colors = M.themeColors('mode = "dark"\naccent = "#89b4fa"\nred = "#f38ba8"\n# green = "#000000"\nbright_red = "#F38BA8ff"\n')
+    assert.deepStrictEqual(colors, { accent: "#89b4fa", red: "#f38ba8", bright_red: "#F38BA8ff" })
+    assert.ok(M.SWITCHES.every(s => s.color))
+  },
   "curve points span the box and clamp"() {
     const pts = M.curvePoints([20, 200, 2000, 20000], [0, 15, -15, 40], 300, 100, 15)
     assert.strictEqual(pts[0].x, 0)

@@ -44,6 +44,39 @@ Panel {
 
   // What the current Sound and Correction choices would do with the
   // measurements, worked out without saving anything (calibrate fit --preview).
+  // The theme's full palette, read from the same colors.toml as the shell,
+  // so the graph and switches follow a theme switch. A colour a theme does
+  // not define falls back to its accent or foreground.
+  property var themePalette: ({})
+  function themeColor(name, fallback) {
+    var value = themePalette[name]
+    return value ? value : (fallback || Commons.Color.accent)
+  }
+  readonly property color colorMeasured: themeColor("orange", themeColor("red"))
+  readonly property color colorPlanned: themeColor("blue")
+  readonly property color colorChecked: themeColor("green")
+  readonly property color colorTarget: themeColor("yellow")
+  readonly property color colorOn: themeColor("green", Commons.Color.foreground)
+  readonly property var targetColors: ({
+    flat: themeColor("cyan"), warm: themeColor("orange"), room: themeColor("magenta")
+  })
+
+  FileView {
+    id: themeFile
+    path: Quickshell.env("HOME") + "/.local/state/omarchy/current/theme/colors.toml"
+    watchChanges: true
+    printErrors: false
+    onLoaded: root.themePalette = Model.themeColors(text())
+    onFileChanged: reload()
+  }
+
+  // A theme switch can replace the whole theme folder, which a file watch does
+  // not always see; the shell's own colours changing says it happened.
+  Connections {
+    target: Commons.Color
+    function onAccentChanged() { themeFile.reload() }
+  }
+
   // Folded sections, remembered in this widget's shell.json entry.
   property bool presetsCollapsed: setting("presetsCollapsed", false) === true
   property bool micCollapsed: setting("micCollapsed", false) === true
@@ -452,7 +485,7 @@ Panel {
             id: heroIcon
             textFormat: Text.PlainText
             text: "\uf1de"
-            color: root.bar.foreground
+            color: root.dspState === "on" ? root.colorOn : root.bar.foreground
             opacity: root.dspState === "on" ? 1 : 0.45
             font.family: root.bar.fontFamily
             font.pixelSize: Style.font.display
@@ -483,7 +516,9 @@ Panel {
             Text {
               text: Model.heroStatus(root.status, root.routedLive).toUpperCase()
               textFormat: Text.PlainText
-              color: Qt.darker(root.bar.foreground, 1.4)
+              color: root.dspState === "on" ? root.colorOn
+                : (root.dspState === "failed" ? Commons.Color.urgent
+                  : (root.dspState === "bypassed" ? root.colorMeasured : Qt.darker(root.bar.foreground, 1.4)))
               font.family: root.bar.fontFamily
               font.pixelSize: Style.font.caption
               font.bold: true
@@ -675,6 +710,7 @@ Panel {
             SwitchRow {
               required property var modelData
               label: modelData.label
+              tint: root.themeColor(modelData.color)
               description: modelData.key === "deep_bass" && Model.fitKnee(root.activeFit) === 0
                 ? "These speakers reach the bottom of the measurement; there is no missing bass to suggest."
                 : modelData.description
@@ -805,7 +841,7 @@ Panel {
                 height: parent.height
                 radius: parent.radius
                 width: Math.max(parent.height, parent.width * root.calFraction)
-                color: root.bar.foreground
+                color: root.colorPlanned
                 // Style.duration honours reduced motion where the release has it.
                 Behavior on width { NumberAnimation { duration: typeof Style.duration === "function" ? Style.duration(250) : 250; easing.type: Easing.OutCubic } }
               }
@@ -1005,6 +1041,10 @@ Panel {
 
     onMeasuredChanged: requestPaint()
     onPlannedChanged: requestPaint()
+    Connections {
+      target: root
+      function onThemePaletteChanged() { graph.requestPaint() }
+    }
     onTargetCurveChanged: requestPaint()
     onWidthChanged: requestPaint()
     onInkChanged: requestPaint()
@@ -1037,22 +1077,30 @@ Panel {
       }
       ctx.beginPath(); ctx.moveTo(0, height / 2); ctx.lineTo(width, height / 2); ctx.stroke()
       ctx.restore()
-      stroke(ctx, measured, ink, 0.35, 1.5, false, true)
-      stroke(ctx, targetCurve, accent, 0.9, 1.5, true, false)
-      stroke(ctx, planned, ink, 1.0, 2, false, true)
+      stroke(ctx, measured, root.colorMeasured, 0.75, 1.5, false, true)
+      stroke(ctx, targetCurve, root.colorTarget, 0.9, 1.5, true, false)
+      stroke(ctx, planned, showCheck ? root.colorChecked : root.colorPlanned, 1.0, 2, false, true)
     }
 
-    Text {
+    // A key with a sample of each line in its colour.
+    Row {
       anchors.left: parent.left
       anchors.bottom: parent.bottom
-      text: graph.showCheck ? "faint: without · solid: with correction · dashed: target"
-        : (graph.planned.length > 0 ? "faint: measured · solid: planned · dashed: target"
-          : (root.previewing ? "faint: measured · dashed: target · working out the plan…" : "faint: measured · dashed: target"))
-      textFormat: Text.PlainText
-      color: root.bar.foreground
-      opacity: 0.5
-      font.family: root.bar.fontFamily
-      font.pixelSize: Style.font.caption
+      spacing: Style.space(10)
+
+      LegendItem { tint: root.colorMeasured; label: graph.showCheck ? "without" : "measured" }
+      LegendItem {
+        visible: graph.planned.length > 0
+        tint: graph.showCheck ? root.colorChecked : root.colorPlanned
+        label: graph.showCheck ? "with correction" : "planned"
+      }
+      LegendItem { tint: root.colorTarget; label: "target"; dashed: true }
+      LegendItem {
+        visible: graph.planned.length === 0 && root.previewing
+        tint: root.colorPlanned
+        label: "working out the plan…"
+        swatch: false
+      }
     }
   }
 
@@ -1066,6 +1114,10 @@ Panel {
     readonly property color accent: Commons.Color.accent
 
     onSelectedChanged: requestPaint()
+    Connections {
+      target: root
+      function onThemePaletteChanged() { strip.requestPaint() }
+    }
     onWidthChanged: requestPaint()
     onInkChanged: requestPaint()
 
@@ -1085,8 +1137,8 @@ Panel {
       for (var n = 0; n < names.length; n++) {
         var pts = Model.curvePoints(grid, Model.targetCurve(names[n], grid), width, plot, 5)
         ctx.save()
-        ctx.globalAlpha = names[n] === selected ? 1.0 : 0.3
-        ctx.strokeStyle = names[n] === selected ? accent : ink
+        ctx.globalAlpha = names[n] === selected ? 1.0 : 0.35
+        ctx.strokeStyle = root.targetColors[names[n]]
         ctx.lineWidth = names[n] === selected ? 2 : 1
         root.tracePath(ctx, pts)
         ctx.stroke()
@@ -1175,6 +1227,7 @@ Panel {
     property string description: ""
     property bool checked: false
     property bool available: true
+    property color tint: Commons.Color.accent
     signal switched(bool on)
 
     width: parent ? parent.width : 0
@@ -1193,7 +1246,7 @@ Panel {
         width: parent.width
         text: row.label
         textFormat: Text.PlainText
-        color: root.bar.foreground
+        color: row.checked && row.available ? row.tint : root.bar.foreground
         font.family: root.bar.fontFamily
         font.pixelSize: Style.font.bodySmall
         font.bold: true
@@ -1219,7 +1272,42 @@ Panel {
       busy: root.busy
       interactive: row.available && !root.busy
       foreground: root.bar.foreground
+      accent: row.tint
       onToggled: row.switched(!row.checked)
+    }
+  }
+
+  // One entry of the graph's key: a short sample of the line, and its name.
+  component LegendItem: Row {
+    property color tint: Commons.Color.accent
+    property string label: ""
+    property bool dashed: false
+    property bool swatch: true
+    spacing: Style.space(4)
+
+    Row {
+      visible: swatch
+      anchors.verticalCenter: parent.verticalCenter
+      spacing: Style.space(2)
+      Repeater {
+        model: dashed ? 2 : 1
+        Rectangle {
+          width: dashed ? Style.space(4) : Style.space(10)
+          height: Math.max(2, Style.space(2))
+          radius: height / 2
+          color: tint
+        }
+      }
+    }
+
+    Text {
+      anchors.verticalCenter: parent.verticalCenter
+      text: label
+      textFormat: Text.PlainText
+      color: tint
+      opacity: 0.9
+      font.family: root.bar.fontFamily
+      font.pixelSize: Style.font.caption
     }
   }
 }
