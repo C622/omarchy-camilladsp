@@ -154,14 +154,54 @@ def mic_ok(mic):
     raise Refused(f"The microphone {mic} is not connected.")
 
 
-def nothing_playing():
-    """Refuse while anything else plays: it would be measured as the speakers."""
+def output_level(sink, seconds=1.2):
+    """Peak level in dBFS of what sink is playing, from its monitor."""
+    tmp = tempfile.mkdtemp(prefix="camilladsp-cal-")
+    try:
+        path = os.path.join(tmp, "monitor.wav")
+        rec = subprocess.Popen(
+            ["pw-record", "--target", sink, "-P", "{ stream.capture.sink = true node.name = camilladsp-calibration-listen }",
+             "--rate", str(dsp.FS), "--channels", "2", "--format", "f32", path],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(seconds)
+        rec.send_signal(os_signal.SIGINT)
+        try:
+            rec.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            rec.kill()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            _, data = wavfile.read(path)
+        data = np.asarray(data, dtype=np.float64)[int(0.2 * dsp.FS):]
+        return float(20 * np.log10(np.max(np.abs(data)) + 1e-12)) if data.size else -120.0
+    except (OSError, ValueError):
+        return -120.0
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def nothing_playing(sink):
+    """Refuse while anything else is audible: it would be measured as the speakers.
+
+    An open stream is not enough to refuse. Players, voice tools and games often
+    keep one running in silence, so when there is one this listens to the
+    output itself and only refuses if something can actually be heard.
+    """
+    open_streams = []
     for i in pactl_json("list", "sink-inputs"):
         props = i.get("properties", {})
         if props.get("node.name") == DSP_STREAM or i.get("corked"):
             continue
         app = props.get("application.name") or props.get("media.name") or "Something"
-        raise Refused(f"{app} is playing. Pause it so it is not measured as the speakers.")
+        binary = props.get("application.process.binary")
+        if binary and binary not in app:
+            app += f" ({binary})"
+        open_streams.append(app)
+    if not open_streams:
+        return
+    if output_level(sink) > -70:
+        names = ", ".join(sorted(set(open_streams)))
+        raise Refused(f"Something is playing ({names}). Pause it so it is not measured as the speakers.")
 
 
 def play_and_record(played, sink, mic, seconds_extra=1.0, on_tick=None):
@@ -356,7 +396,7 @@ def measure(sink, mic, position, stage_name, through_dsp=False, mic_calibration=
     channels = 2
     mic_ok(mic)
     sink_volume_ok(sink if not through_dsp else current_target())
-    nothing_playing()
+    nothing_playing(sink if not through_dsp else current_target())
 
     progress(stage_name, "Checking the level", 0.02)
     probe_db = -35.0
