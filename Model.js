@@ -290,6 +290,39 @@ var SWITCHES = [
     description: "Off plays the plain speakers, level matched, so only the tone changes." }
 ]
 
+// How much of the Loudness boost is applied now, from the fader the tracker
+// sets: none above the filter's reference level (-5 dB, LOUDNESS in
+// calibration_dsp.py), all of it 20 dB below. Empty while it is unknown.
+function loudnessNote(status) {
+  var faders = status && status.dsp ? status.dsp.GetFaders : null
+  if (!faders || !faders[1]) return ""
+  var level = Number(faders[1].volume)
+  if (!isFinite(level)) return ""
+  var share = Math.max(0, Math.min(1, (-5 - level) / 20))
+  var amount = share === 0 ? "no boost" : (share === 1 ? "the full boost" : Math.round(share * 100) + "% of the boost")
+  return "Now: " + amount + " (listening level " + level.toFixed(0) + " dB)."
+}
+
+// The switches that are on, for the folded section.
+function switchSummary(options) {
+  var on = []
+  for (var i = 0; i < SWITCHES.length; i++) {
+    var s = SWITCHES[i]
+    var value = options ? options[s.key] : undefined
+    if (s.key === "calibration") {
+      if (value === false) on.push("calibration off")
+    } else if (value === true) {
+      on.push(s.label.toLowerCase())
+    }
+  }
+  return on.length ? on.join(" · ") : "plain calibration"
+}
+
+function deepBassDescription(knee) {
+  if (!(knee > 0)) return "These speakers reach the bottom of the measurement; there is no missing bass to suggest."
+  return "Suggests notes below " + Math.round(knee) + " Hz, which these speakers cannot play, through their harmonics. Subtle when little music lies that low."
+}
+
 // The lowest bass limit any channel of a fit found; 0 when the speakers
 // reach the bottom of the measurement, where Deep bass has nothing to add.
 function fitKnee(fit) {
@@ -333,6 +366,7 @@ if (typeof module !== "undefined") {
     tooltip: tooltip, usableMics: usableMics, micInfo: micInfo, calibrationOptions: calibrationOptions, calibrationPath: calibrationPath,
     isMeasurementMic: isMeasurementMic, calibrationHint: calibrationHint, event: event, fitSummary: fitSummary,
     checkSummary: checkSummary, curvePoints: curvePoints, smoothCurve: smoothCurve, micSummary: micSummary,
-    SWITCHES: SWITCHES, fitKnee: fitKnee, themeColors: themeColors, targetDb: targetDb, targetCurve: targetCurve, logGrid: logGrid, frequencyX: frequencyX, meanCurve: meanCurve
+    SWITCHES: SWITCHES, fitKnee: fitKnee, themeColors: themeColors, loudnessNote: loudnessNote,
+    switchSummary: switchSummary, deepBassDescription: deepBassDescription, targetDb: targetDb, targetCurve: targetCurve, logGrid: logGrid, frequencyX: frequencyX, meanCurve: meanCurve
   }
 }

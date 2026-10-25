@@ -12,8 +12,14 @@ sends it to the filter's fader as an external volume.
 
 It reacts to PulseAudio events instead of polling, and re-reads the output
 CamillaDSP plays to on every change, so switching outputs is followed too.
+
+When the volume is set further on, on an amplifier, the output stays at full
+and there is nothing to follow. The Loudness strength then says how much
+quieter than the output the music is taken to play (LOUDNESS_LEVELS in
+calibration_dsp.py), read from calibration-options.json.
 """
 
+import json
 import os
 import re
 import select
@@ -31,6 +37,17 @@ def target(state_dir):
             return f.read().strip()
     except OSError:
         return ""
+
+
+LEVELS = {"volume": 0.0, "some": -12.0, "full": -25.0}  # LOUDNESS_LEVELS in calibration_dsp.py
+
+
+def level_offset(state_dir):
+    try:
+        with open(os.path.join(state_dir, "calibration-options.json")) as f:
+            return LEVELS.get(json.load(f).get("loudness_level", "volume"), 0.0)
+    except (OSError, ValueError):
+        return 0.0
 
 
 def volume_db(sink):
@@ -60,6 +77,8 @@ def main():
             if pending:
                 sink = target(state_dir)
                 db = volume_db(sink) if sink else None
+                if db is not None:
+                    db += level_offset(state_dir)
                 # CamillaDSP may still be starting; keep trying until it answers.
                 if db is not None and db != last:
                     last = db if send(port, db) else None

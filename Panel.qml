@@ -48,15 +48,21 @@ Panel {
   // so the graph and switches follow a theme switch. A colour a theme does
   // not define falls back to its accent or foreground.
   property var themePalette: ({})
-  function themeColor(name, fallback) {
-    var value = themePalette[name]
-    return value ? value : (fallback || Commons.Color.accent)
+  // Used when the theme file cannot be read or lacks a colour. Not the
+  // accent: in some themes that is the text colour, and nothing would stand
+  // out from anything else.
+  readonly property var fallbackColors: ({
+    orange: "#f5a97f", blue: "#8aadf4", green: "#a6da95", yellow: "#eed49f",
+    cyan: "#8bd5ca", magenta: "#c6a0f6", red: "#ed8796"
+  })
+  function themeColor(name) {
+    return themePalette[name] || fallbackColors[name] || Commons.Color.accent
   }
-  readonly property color colorMeasured: themeColor("orange", themeColor("red"))
+  readonly property color colorMeasured: themeColor("orange")
   readonly property color colorPlanned: themeColor("blue")
   readonly property color colorChecked: themeColor("green")
   readonly property color colorTarget: themeColor("yellow")
-  readonly property color colorOn: themeColor("green", Commons.Color.foreground)
+  readonly property color colorOn: themeColor("green")
   readonly property var targetColors: ({
     flat: themeColor("cyan"), warm: themeColor("orange"), room: themeColor("magenta")
   })
@@ -66,7 +72,10 @@ Panel {
     path: Quickshell.env("HOME") + "/.local/state/omarchy/current/theme/colors.toml"
     watchChanges: true
     printErrors: false
-    onLoaded: root.themePalette = Model.themeColors(text())
+    onLoaded: {
+      root.themePalette = Model.themeColors(text())
+      console.info("community.camilladsp: theme colours from " + path + ": " + Object.keys(root.themePalette).length)
+    }
     onFileChanged: reload()
   }
 
@@ -80,9 +89,11 @@ Panel {
   // Folded sections, remembered in this widget's shell.json entry.
   property bool presetsCollapsed: setting("presetsCollapsed", false) === true
   property bool micCollapsed: setting("micCollapsed", false) === true
+  property bool soundCollapsed: setting("soundCollapsed", false) === true
 
   function setCollapsed(key, value) {
     if (key === "presetsCollapsed") presetsCollapsed = value
+    else if (key === "soundCollapsed") soundCollapsed = value
     else micCollapsed = value
     var next = Object.assign({}, settings)
     next[key] = value
@@ -698,25 +709,52 @@ Panel {
           spacing: Style.space(8)
           visible: !!root.activeFit
 
-          PanelSectionHeader {
+          FoldHeader {
+            width: parent.width
             text: "Calibrated sound"
-            foreground: root.bar.foreground
-            fontFamily: root.bar.fontFamily
+            collapsed: root.soundCollapsed
+            summary: Model.switchSummary(root.options)
+            onToggled: root.setCollapsed("soundCollapsed", !root.soundCollapsed)
           }
 
           Repeater {
-            model: Model.SWITCHES
+            model: root.soundCollapsed ? [] : Model.SWITCHES
 
             SwitchRow {
               required property var modelData
               label: modelData.label
               tint: root.themeColor(modelData.color)
-              description: modelData.key === "deep_bass" && Model.fitKnee(root.activeFit) === 0
-                ? "These speakers reach the bottom of the measurement; there is no missing bass to suggest."
+              description: modelData.key === "deep_bass" ? Model.deepBassDescription(Model.fitKnee(root.activeFit))
                 : modelData.description
               checked: root.options[modelData.key] === true
               available: modelData.key !== "deep_bass" || Model.fitKnee(root.activeFit) > 0
               onSwitched: function(on) { root.setOption(modelData.option, on) }
+            }
+          }
+
+          // Loudness follows the output's volume. When the volume is turned on
+          // an amplifier instead, the output sits at full and there is nothing
+          // to follow: the strength says how loud to assume the music plays.
+          Column {
+            width: parent.width
+            spacing: Style.space(6)
+            visible: !root.soundCollapsed && root.options.loudness === true
+
+            Choice {
+              label: "Loudness strength"
+              options: [
+                { value: "volume", label: "Follow volume" },
+                { value: "some", label: "Some" },
+                { value: "full", label: "Full" }
+              ]
+              value: root.options.loudness_level || "volume"
+              onPicked: function(v) { root.run(["calibrate", "option", "loudness-level", v]) }
+            }
+
+            Message {
+              text: Model.loudnessNote(root.status)
+                + ((root.options.loudness_level || "volume") === "volume"
+                  ? " Turn the volume down to hear it, or use Some or Full if the volume is set on an amplifier." : "")
             }
           }
         }

@@ -118,6 +118,18 @@ const tests = {
     assert.deepStrictEqual(colors, { accent: "#89b4fa", red: "#f38ba8", bright_red: "#F38BA8ff" })
     assert.ok(M.SWITCHES.every(s => s.color))
   },
+  "loudness note, switch summary, deep bass text"() {
+    const at = v => ({ dsp: { GetFaders: [{ volume: 0 }, { volume: v }] } })
+    assert.strictEqual(M.loudnessNote(at(0)), "Now: no boost (listening level 0 dB).")
+    assert.strictEqual(M.loudnessNote(at(-15)), "Now: 50% of the boost (listening level -15 dB).")
+    assert.strictEqual(M.loudnessNote(at(-40)), "Now: the full boost (listening level -40 dB).")
+    assert.strictEqual(M.loudnessNote({ dsp: null }), "")
+    assert.strictEqual(M.switchSummary({ loudness: true, louder: false, deep_bass: true, calibration: true }), "loudness · deep bass")
+    assert.strictEqual(M.switchSummary({ calibration: false }), "calibration off")
+    assert.strictEqual(M.switchSummary({}), "plain calibration")
+    assert.match(M.deepBassDescription(62.4), /below 62 Hz/)
+    assert.match(M.deepBassDescription(0), /no missing bass/)
+  },
   "curve points span the box and clamp"() {
     const pts = M.curvePoints([20, 200, 2000, 20000], [0, 15, -15, 40], 300, 100, 15)
     assert.strictEqual(pts[0].x, 0)

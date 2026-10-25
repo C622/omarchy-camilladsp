@@ -573,7 +573,7 @@ status_json() {
   description="$( [[ -n $target ]] && sink_description "$target")"
 
   if [[ $state == "active" ]]; then
-    dsp="$(dsp_query '"GetState"' '"GetProcessingLoad"' '"GetClippedSamples"' '"GetCaptureRate"' '"GetVersion"' 2>/dev/null |
+    dsp="$(dsp_query '"GetState"' '"GetProcessingLoad"' '"GetClippedSamples"' '"GetCaptureRate"' '"GetVersion"' '"GetFaders"' 2>/dev/null |
       jq -c 'with_entries(.value |= .value)' 2>/dev/null)"
     [[ -n $dsp && $dsp != "{}" ]] || dsp="null"
   fi

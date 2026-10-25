@@ -48,7 +48,7 @@ When a calibrated preset is playing, the panel shows four switches under **Calib
 
 | Switch | What it does |
 |---|---|
-| **Loudness** | Fuller sound at low volume, like the loudness button on a stereo. A small service follows the output's own volume and feeds it to CamillaDSP's `Loudness` filter, which boosts bass and treble as you turn down. It lowers the mids rather than boosting the ends, so it can't clip after the volume control. |
+| **Loudness** | Fuller sound at low volume, like the loudness button on a stereo. A small service follows the output's own volume and feeds it to CamillaDSP's `Loudness` filter, which boosts bass and treble as you turn down. It lowers the mids rather than boosting the ends, so it can't clip after the volume control. If you set the volume on an amplifier, the output stays at full and there is nothing to follow: pick **Some** or **Full** under *Loudness strength* instead of *Follow volume*. The panel shows how much of the boost is applied right now. |
 | **Make it louder** | Gives back the volume the correction takes away, up to 6 dB, with a limiter at −1 dBFS to catch peaks. |
 | **Deep bass** | Suggests low notes the speakers can't play. What lies below the measured bass limit is driven into a clipper, and the harmonics between the limit and three times it are mixed back ahead of the EQ, the bankstown recipe built from CamillaDSP's own mixers, biquads and limiter. Only offered when the measurement found a bass limit. |
 | **Calibration** | Off plays the plain speakers, level matched to the calibration, so only the tone changes. |
@@ -83,7 +83,7 @@ miniDSP's format (the `"Sens Factor =…, SERNO: …"` header) and REW-style `.t
 - **Budget**: at most −12 dB per filter and +6 dB of boost, at most −15/+6 dB of total correction at any frequency, and a preamp that keeps the loudest corrected frequency 0.5 dB below full scale.
 - **FIR mode** turns the same smoothed correction into an 8192-tap minimum-phase filter per channel (CamillaDSP `Conv`). It fills dips only halfway and fades out past the measured band.
 
-Click **Presets** or **Calibrate with a microphone** to fold that section away; it then shows just the current preset, or the microphone in use, and stays folded the next time you open the panel.
+Click **Presets**, **Calibrated sound** or **Calibrate with a microphone** to fold that section away; it then shows just the current preset, the switches that are on, or the microphone in use, and stays folded the next time you open the panel.
 
 ## Hotkeys and IPC
 

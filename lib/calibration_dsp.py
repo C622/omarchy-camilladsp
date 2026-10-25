@@ -699,7 +699,12 @@ def preamp_for(corrections):
 
 
 # The four switches on a calibrated preset (see preset_yaml).
-DEFAULT_OPTIONS = {"loudness": False, "louder": False, "deep_bass": False, "calibration": True}
+DEFAULT_OPTIONS = {"loudness": False, "louder": False, "deep_bass": False, "calibration": True,
+                   "loudness_level": "volume"}
+# How much quieter than the output's own volume the Loudness filter is told
+# the music plays. "volume" follows the output alone; the others are for a
+# volume set further on, on an amplifier, where the output sits at full.
+LOUDNESS_LEVELS = {"volume": 0.0, "some": -12.0, "full": -25.0}
 # Loudness compensation follows the output's own volume, sent by
 # lib/loudness-tracker to fader Aux1. Full boost 20 dB below the reference.
 LOUDNESS_FADER = "Aux1"

@@ -9,6 +9,7 @@
   calibrate mic-cal --mic M (--file F | --clear)
                                           use a calibration file for a microphone
   calibrate option NAME on|off            loudness, louder, deep-bass or calibration
+  calibrate option loudness-level volume|some|full
   calibrate summary                       the session so far, as JSON
   calibrate reset                         forget the measurements
 
@@ -684,7 +685,15 @@ def _by_preset(folder):
 def cmd_option(args):
     """Turn one of the four switches on or off and rewrite every calibrated preset."""
     options = load_options()
-    options[args.name.replace("-", "_")] = args.value == "on"
+    key = args.name.replace("-", "_")
+    if key == "loudness_level":
+        if args.value not in dsp.LOUDNESS_LEVELS:
+            raise Refused(f"loudness-level is one of {', '.join(dsp.LOUDNESS_LEVELS)}")
+        options[key] = args.value
+    elif args.value in ("on", "off"):
+        options[key] = args.value == "on"
+    else:
+        raise Refused(f"{args.name} is on or off")
     save_json(OPTIONS, options)
     rewritten = []
     for pid, fit in _by_preset("fits").items():
@@ -727,8 +736,8 @@ def main():
     group.add_argument("--file")
     group.add_argument("--clear", action="store_true")
     o = sub.add_parser("option")
-    o.add_argument("name", choices=["loudness", "louder", "deep-bass", "calibration"])
-    o.add_argument("value", choices=["on", "off"])
+    o.add_argument("name", choices=["loudness", "louder", "deep-bass", "calibration", "loudness-level"])
+    o.add_argument("value")
     sub.add_parser("summary")
     sub.add_parser("reset")
     args = parser.parse_args()
