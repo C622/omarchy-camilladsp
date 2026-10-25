@@ -312,13 +312,15 @@ Panel {
     owner: root
     bar: root.bar
     open: root.opened
-    focusTarget: panel.loadedContent
+    focusTarget: keyCatcher
     contentWidth: panel.fittedContentWidth(Style.space(420))
-    contentHeight: panel.fittedContentHeight(panel.loadedContentHeight)
+    contentHeight: panel.fittedContentHeight(column.implicitHeight)
 
-    content: PanelKeyCatcher {
+    // The card goes in as children rather than through `content`, which
+    // Omarchy 4.0.x does not have; newer releases still accept children.
+    PanelKeyCatcher {
+      id: keyCatcher
       anchors.fill: parent
-      implicitHeight: column.implicitHeight
       onMoveRequested: function(dx, dy) {
         if (root.presets.length === 0) return
         if (!root.cursorActive) { root.cursorActive = true; return }
@@ -630,7 +632,8 @@ Panel {
                 radius: parent.radius
                 width: Math.max(parent.height, parent.width * root.calFraction)
                 color: root.bar.foreground
-                Behavior on width { NumberAnimation { duration: Style.duration(250); easing.type: Easing.Bezier; easing.bezierCurve: Style.easeOut } }
+                // Style.duration honours reduced motion where the release has it.
+                Behavior on width { NumberAnimation { duration: typeof Style.duration === "function" ? Style.duration(250) : 250; easing.type: Easing.OutCubic } }
               }
             }
           }
