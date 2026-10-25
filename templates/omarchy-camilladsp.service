@@ -13,8 +13,8 @@ ExecStart=@CAMILLADSP@ --port @PORT@ --statefile @STATE_DIR@/statefile.yml @STAT
 # SIGHUP makes CamillaDSP reread the config, which is how presets switch.
 ExecReload=/bin/kill -HUP $MAINPID
 # Tell the bar widget, so a crash or an outside systemctl call shows up at once.
-ExecStartPost=-/usr/bin/omarchy-shell -q community.camilladsp refresh
-ExecStopPost=-/usr/bin/omarchy-shell -q community.camilladsp refresh
+ExecStartPost=-/usr/bin/omarchy-shell -q c622.camilladsp refresh
+ExecStopPost=-/usr/bin/omarchy-shell -q c622.camilladsp refresh
 Restart=on-failure
 RestartSec=2
 

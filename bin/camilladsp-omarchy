@@ -32,7 +32,7 @@ options_file="$state_dir/calibration-options.json"
 sink_name=camilladsp
 capture_node=camilladsp-capture
 playback_node=camilladsp-playback
-ipc_target=community.camilladsp
+ipc_target=c622.camilladsp
 
 # Overridable in ~/.config/camilladsp/omarchy.conf. Leave port unset there
 # to let the plugin pick one: CamillaDSP's usual 1234 is also LM Studio's.
@@ -42,6 +42,9 @@ port_file="$state_dir/port"
 samplerate=48000
 chunksize=1024
 camilladsp_version=v4.1.3
+# The exact commit of that release, so the build cannot change under a tag.
+# Clear it in omarchy.conf to build another camilladsp_version by its tag.
+camilladsp_rev=05e9cfcdf43c0dfe078ed3feb8af4c8bd701fd74
 camilladsp_repo=https://github.com/HEnquist/camilladsp
 
 # shellcheck disable=SC1090
@@ -122,8 +125,10 @@ install_camilladsp() {
   omarchy-pkg-add clang pkgconf pipewire || return 1
 
   # The crate is named CamillaDSP; the binary it builds is camilladsp.
+  local crate_source=(--tag "$camilladsp_version")
+  [[ -n $camilladsp_rev ]] && crate_source=(--rev "$camilladsp_rev")
   cargo install --locked --root "$HOME/.local" \
-    --git "$camilladsp_repo" --tag "$camilladsp_version" \
+    --git "$camilladsp_repo" "${crate_source[@]}" \
     --features pipewire-backend --bin camilladsp CamillaDSP || return 1
 
   has_pipewire_backend "$HOME/.local/bin/camilladsp" ||
@@ -458,6 +463,20 @@ install_dsp_unit() {
     "$plugin_dir/templates/$service" >"$unit_dir/$service"
 }
 
+# Rewrite the installed units when they no longer match this copy of the
+# plugin: after an update changed a template, or when the plugin was added
+# again under another folder, which the loudness unit runs its tracker from.
+refresh_units() {
+  local before after
+  before="$(cat "$unit_dir/$service" "$unit_dir/$sink_service" "$unit_dir/$loudness_service" 2>/dev/null | md5sum)"
+  install_dsp_unit || return 0
+  cmp -s "$plugin_dir/templates/$sink_service" "$unit_dir/$sink_service" ||
+    cp "$plugin_dir/templates/$sink_service" "$unit_dir/$sink_service"
+  [[ -f $unit_dir/$loudness_service ]] && install_loudness_unit
+  after="$(cat "$unit_dir/$service" "$unit_dir/$sink_service" "$unit_dir/$loudness_service" 2>/dev/null | md5sum)"
+  [[ $before == "$after" ]] || systemctl --user daemon-reload
+}
+
 # CamillaDSP keeps playing when its control port is taken, but nothing can
 # reach it: no status, no loudness. Move to a free port when another program
 # holds this one (not when it is set by hand in omarchy.conf), and restart
@@ -537,6 +556,7 @@ cmd_on() {
   local target preset was_active
 
   require_setup
+  refresh_units
   ensure_port
   target="$(choose_target)" || fail "no audio output found"
   preset="$(current_preset)"
@@ -603,7 +623,10 @@ cmd_preset() {
   target="$(cat "$target_file" 2>/dev/null)"
   [[ -n $target ]] || target="$(choose_target)" || fail "no audio output found"
 
-  is_setup && ensure_port
+  if is_setup; then
+    refresh_units
+    ensure_port
+  fi
   render_config "$preset" "$target"
   printf '%s\n' "$preset" >"$preset_file"
 

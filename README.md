@@ -1,6 +1,6 @@
 # CamillaDSP for Omarchy
 
-<img src="screenshot.png" alt="The panel: a calibrated preset playing, the sound switches, the microphone and its calibration file, and the measured, planned and switched response" width="340" align="right">
+<img src="preview.png" alt="The panel: a calibrated preset playing, the sound switches, the microphone and its calibration file, and the measured, planned and switched response" width="340" align="right">
 
 Run every sound on your desktop through [CamillaDSP](https://github.com/HEnquist/camilladsp), switch presets from the bar, and calibrate your speakers or your room with a microphone: it plays sweeps, measures, fits the filters, and checks the result, all from the panel.
 
@@ -16,11 +16,31 @@ It stands on the shoulders of [Speaker Calibrator](https://github.com/thefreshof
 omarchy plugin add https://github.com/C622/omarchy-camilladsp.git --enable
 ```
 
-Then click the sliders icon in the bar and press **Set up**. It opens a terminal because it may install packages:
+Adding the plugin only copies it into `~/.config/omarchy/plugins/`; nothing runs until you ask. Click the sliders icon in the bar and press **Set up**. It opens a terminal, because installing packages may ask for your password:
 
-- **CamillaDSP 4 with the PipeWire backend.** If one is already installed (an AUR package, say) and was built with `pipewire-backend`, it is used. Otherwise it is built from source with cargo into `~/.local/bin` (a few minutes, once).
+- **CamillaDSP 4 with the PipeWire backend.** If one is already installed (an AUR package, say) and was built with `pipewire-backend`, it is used. Otherwise CamillaDSP 4.1.3 is built from source with cargo into `~/.local/bin`, pinned to that release's exact commit (a few minutes, once).
 - `python-numpy` and `python-scipy` for the calibrator.
-- Two systemd user services, `omarchy-camilladsp-sink` and `omarchy-camilladsp`, and a WirePlumber rule. Nothing system-wide is touched, and PipeWire is never restarted.
+- Two systemd user services, `omarchy-camilladsp-sink` and `omarchy-camilladsp` (and `omarchy-camilladsp-loudness` once you use Loudness), plus a WirePlumber rule. All of the configuration is in your home folder; PipeWire is never restarted, and WirePlumber is restarted once to read its rule.
+
+### Dependencies
+
+| What | Why | Installed by |
+|---|---|---|
+| [CamillaDSP](https://github.com/HEnquist/camilladsp) 4.x, `pipewire-backend` | Does all the sound processing | Set up, built with cargo into `~/.local/bin` unless one is installed |
+| `rust` (cargo), `clang`, `pkgconf`, `pipewire` | Building CamillaDSP (bindgen needs libclang) | Set up, from the Arch repositories, only when building |
+| `python-numpy`, `python-scipy` | Measurement analysis and filter fitting | Set up, from the Arch repositories |
+| `python`, `jq`, `pactl`, `pw-cli`, `pw-link`, `pw-play`, `pw-record` | Control, routing and measuring | Already part of Omarchy |
+
+## Removing it
+
+Turn CamillaDSP off and remove what Set up installed, then remove the plugin:
+
+```bash
+~/.config/omarchy/plugins/c622.camilladsp/bin/camilladsp-omarchy uninstall
+omarchy plugin remove c622.camilladsp
+```
+
+`uninstall` points the default output back at your real device, stops and removes the services, the virtual sink and the WirePlumber rule. It keeps what you might want again: your presets and calibrations in `~/.config/camilladsp/`, measurements in `~/.local/state/omarchy-camilladsp/`, and the CamillaDSP build at `~/.local/bin/camilladsp`. Delete those by hand for a clean slate, and remove the packages with `omarchy pkg drop` if nothing else needs them.
 
 ## Using it
 
@@ -96,11 +116,11 @@ Click **Presets**, **Calibrated sound** or **Calibrate with a microphone** to fo
 
 ```lua
 -- ~/.config/hypr/bindings.lua
-o.bind("SUPER + ALT + E", "CamillaDSP on/off", "omarchy-shell community.camilladsp togglePower")
-o.bind("SUPER + ALT + PERIOD", "Next EQ preset", "omarchy-shell community.camilladsp nextPreset")
+o.bind("SUPER + ALT + E", "CamillaDSP on/off", "omarchy-shell c622.camilladsp togglePower")
+o.bind("SUPER + ALT + PERIOD", "Next EQ preset", "omarchy-shell c622.camilladsp nextPreset")
 ```
 
-The IPC target `community.camilladsp` has `open`, `close`, `toggle`, `refresh`, `togglePower`, `nextPreset` and `prevPreset`.
+The IPC target `c622.camilladsp` has `open`, `close`, `toggle`, `refresh`, `togglePower`, `nextPreset` and `prevPreset`.
 
 Everything the panel does is also a command, in `bin/camilladsp-omarchy` inside the plugin folder:
 
@@ -120,7 +140,7 @@ camilladsp-omarchy calibrate devices | measure | fit | apply | check | summary |
 | `~/.config/camilladsp/filters/` | FIR filters written by the calibrator |
 | `~/.local/state/omarchy-camilladsp/` | Generated config, selected preset and output, measurements |
 
-`camilladsp-omarchy uninstall` turns everything off and removes the services, sink and WirePlumber rule; presets and measurements stay.
+See [Removing it](#removing-it) for taking it all out again.
 
 ## Safety notes
 

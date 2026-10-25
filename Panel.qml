@@ -12,8 +12,8 @@ import "Model.js" as Model
 // only runs it and shows what it reports.
 Panel {
   id: root
-  moduleName: "community.camilladsp"
-  ipcTarget: "community.camilladsp"
+  moduleName: "c622.camilladsp"
+  ipcTarget: "c622.camilladsp"
   // The panel owns the single IpcHandler its target permits, so it can add
   // refresh and the power/preset methods next to open/close/toggle.
   manageIpc: false
@@ -76,7 +76,7 @@ Panel {
     printErrors: false
     onLoaded: {
       root.themePalette = Model.themeColors(text())
-      console.info("community.camilladsp: theme colours from " + path + ": " + Object.keys(root.themePalette).join(" "))
+      console.info("c622.camilladsp: theme colours from " + path + ": " + Object.keys(root.themePalette).join(" "))
     }
     onFileChanged: reload()
   }
@@ -288,7 +288,7 @@ Panel {
   // Quickshell's own IpcHandler rather than Omarchy's ShellIpc, which older
   // Omarchy releases do not have. omarchy-shell falls back to qs ipc for it.
   IpcHandler {
-    target: "community.camilladsp"
+    target: "c622.camilladsp"
 
     function open(): void { root.open() }
     function close(): void { root.close() }
