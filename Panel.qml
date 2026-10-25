@@ -192,9 +192,12 @@ Panel {
   onRoutedLiveChanged: refresh()
   Component.onCompleted: refresh()
 
-  visible: !(hideWhenOff && dspState !== "on")
-  implicitWidth: visible ? button.implicitWidth : 0
-  implicitHeight: visible ? button.implicitHeight : 0
+  // Sized from its own condition rather than from `visible`, which also goes
+  // false while any parent is hidden and would keep the slot at zero width.
+  readonly property bool shown: !(hideWhenOff && dspState !== "on")
+  visible: shown
+  implicitWidth: shown ? button.implicitWidth : 0
+  implicitHeight: shown ? button.implicitHeight : 0
 
   Process {
     id: statusProc
