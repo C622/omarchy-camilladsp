@@ -278,11 +278,13 @@ function micSummary(mic, position) {
   return parts.join(" · ")
 }
 
-// The switches a calibrated preset can carry (lib/calibrate option).
+// The switches a calibrated preset can carry (lib/calibrate option). Each has
+// its own hue among the six every theme defines (orange is not one of them:
+// terminal-style themes have no slot for it, and it falls back to bright red).
 var SWITCHES = [
   { key: "loudness", option: "loudness", label: "Loudness", color: "yellow",
     description: "Fuller sound at low volume, like the loudness button on a stereo. Follows the output's volume." },
-  { key: "fuller_bass", option: "fuller-bass", label: "Fuller bass", color: "red",
+  { key: "fuller_bass", option: "fuller-bass", label: "Fuller bass", color: "blue",
     description: "Lifts the bass 4 dB just above where the speakers give up, trimming the rest so it cannot clip." },
   { key: "louder", option: "louder", label: "Make it louder", color: "orange",
     description: "Gives back the volume the correction takes away. A limiter catches the peaks." },

@@ -117,6 +117,9 @@ const tests = {
     const colors = M.themeColors('mode = "dark"\naccent = "#89b4fa"\nred = "#f38ba8"\n# green = "#000000"\nbright_red = "#F38BA8ff"\n')
     assert.deepStrictEqual(colors, { accent: "#89b4fa", red: "#f38ba8", bright_red: "#F38BA8ff" })
     assert.ok(M.SWITCHES.every(s => s.color))
+    // No two switches share a hue, counting orange as the red it falls back to.
+    const hues = M.SWITCHES.map(s => s.color === "orange" ? "red" : s.color)
+    assert.strictEqual(new Set(hues).size, hues.length)
     // Terminal-style themes name the palette color0 to color15.
     const ansi = M.themeColors("accent = '#7aa2f7'\ncolor1 = \"#f7768e\"\ncolor2 = \"#9ece6a\"\ncolor4 = \"#7aa2f7\"\ncolor9 = \"#ff899d\"\n")
     assert.strictEqual(M.paletteColor(ansi, "red"), "#f7768e")
