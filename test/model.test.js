@@ -109,7 +109,7 @@ const tests = {
   "mic summary and switches"() {
     const mic = { description: "Umik-1  Gain  18dB Analog Stereo", calibration: { file: "7157757_90deg.txt" } }
     assert.strictEqual(M.micSummary(mic, "listening"), "Umik-1 Gain 18dB Analog Stereo · 90° file · where I sit")
-    assert.deepStrictEqual(M.SWITCHES.map(s => s.option), ["loudness", "louder", "deep-bass", "calibration"])
+    assert.deepStrictEqual(M.SWITCHES.map(s => s.option), ["loudness", "fuller-bass", "louder", "deep-bass", "calibration"])
     assert.strictEqual(M.fitKnee({ channels: [{ knee: 0 }, { knee: 95 }, { knee: 80 }] }), 80)
     assert.strictEqual(M.fitKnee({ channels: [{ knee: 0 }] }), 0)
   },
@@ -134,7 +134,7 @@ const tests = {
     assert.strictEqual(M.switchSummary({ loudness: true, louder: false, deep_bass: true, calibration: true }), "loudness · deep bass")
     assert.strictEqual(M.switchSummary({ calibration: false }), "calibration off")
     assert.strictEqual(M.switchSummary({}), "plain calibration")
-    assert.match(M.deepBassDescription(62.4), /below 62 Hz/)
+    assert.match(M.deepBassDescription(80.2), /below 80 Hz.*up to 241 Hz/)
     assert.match(M.deepBassDescription(0), /no missing bass/)
   },
   "the graph shows what the switches do"() {
@@ -153,6 +153,19 @@ const tests = {
     assert.ok(M.switchesShape({ louder: true }) && !M.switchesShape({ deep_bass: true, calibration: true }))
     assert.strictEqual(M.loudnessShare({ dsp: { GetFaders: [{}, { volume: -15 }] } }, {}), 0.5)
     assert.strictEqual(M.loudnessShare(null, { loudness_level: "full" }), 1)
+  },
+  "fuller bass and wider deep bass"() {
+    // The speaker gives up at 46 Hz and is 6 dB short at 80 Hz (fmin is 1.1 times that).
+    const fit = { grid: [30, 60, 90, 1000], preamp_db: 0,
+      channels: [{ knee: 46, fmin: 88, measured: [0, 0, 0, 0], predicted: [0, 0, 0, 0] }] }
+    assert.strictEqual(M.deepBassCorner(fit), 80)
+    assert.strictEqual(M.fullerBassFreq(fit), 92)
+    assert.strictEqual(M.deepBassCorner({ channels: [{ knee: 0, fmin: 20 }] }), 0)
+    const curve = M.switchedCurve(fit, { fuller_bass: true }, 0)
+    // Bass lifted against the mids by about the shelf, mids trimmed.
+    assert.ok(curve[0] - curve[3] > 3.5 && curve[3] < -3.9, JSON.stringify(curve))
+    // Make it louder gives the trim back.
+    assert.ok(Math.abs(M.switchedCurve(fit, { fuller_bass: true, louder: true }, 0)[3]) < 0.1)
   },
   "curve points span the box and clamp"() {
     const pts = M.curvePoints([20, 200, 2000, 20000], [0, 15, -15, 40], 300, 100, 15)

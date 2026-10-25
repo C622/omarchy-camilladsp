@@ -65,7 +65,7 @@ Usage: camilladsp-omarchy <command>
   calibrate <command>    Measure with a microphone and build a preset:
                            devices | measure --output O --mic M [--position nearfield|listening]
                            fit [--target flat|warm|room|FILE] [--mode peq|fir] [--preview] | apply [id] | check
-                           option <loudness|louder|deep-bass|calibration> <on|off>
+                           option <loudness|fuller-bass|louder|deep-bass|calibration> <on|off>
                            summary | reset
   uninstall              Turn off and remove the services and sink (presets are kept)
 USAGE

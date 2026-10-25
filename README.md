@@ -42,15 +42,16 @@ Write your own, or drop in a full config from elsewhere: any `devices:` block is
 4. **Build.** Choose a sound (**Neutral**, **Warm**, or **Room**, a gentle in-room curve with more bass) and a correction (**Parametric EQ** or **FIR**). The strip under Sound shows the three targets, and the graph previews what the chosen combination would do before anything is saved. Build fits it, saves it as a preset named after the combination, such as *Calibrated EQ · Neutral*, and turns it on. Every combination gets its own preset, so build a few and switch between them, or back to *Flat*, in the preset list. Rebuilding a combination replaces only that one.
 5. **Check.** Plays the sweeps through CamillaDSP and measures what actually comes out, against the target and against what was planned.
 
-### The four switches
+### The switches
 
-When a calibrated preset is playing, the panel shows four switches under **Calibrated sound**. They apply to every calibrated preset, which is rewritten from its saved fit, so switching is instant and nothing has to be measured again.
+When a calibrated preset is playing, the panel shows five switches under **Calibrated sound**. They apply to every calibrated preset, which is rewritten from its saved fit, so switching is instant and nothing has to be measured again.
 
 | Switch | What it does |
 |---|---|
 | **Loudness** | Fuller sound at low volume, like the loudness button on a stereo. A small service follows the output's own volume and feeds it to CamillaDSP's `Loudness` filter, which boosts bass and treble as you turn down. It lowers the mids rather than boosting the ends, so it can't clip after the volume control. If you set the volume on an amplifier, the output stays at full and there is nothing to follow: pick **Some** or **Full** under *Loudness strength* instead of *Follow volume*. The panel shows how much of the boost is applied right now. |
-| **Make it louder** | Gives back the volume the correction takes away, up to 6 dB, with a limiter at −1 dBFS to catch peaks. |
-| **Deep bass** | Suggests low notes the speakers can't play. What lies below the measured bass limit is driven into a clipper, and the harmonics between the limit and three times it are mixed back ahead of the EQ, the bankstown recipe built from CamillaDSP's own mixers, biquads and limiter. Only offered when the measurement found a bass limit. |
+| **Fuller bass** | A +4 dB low shelf just above where the speakers give up (twice the high-pass corner, 60 to 200 Hz), paid for by a 4 dB input trim so the added bass cannot clip, the way the Speaker Calibrator's *Bass: Full* works. |
+| **Make it louder** | Gives back the volume the correction takes away, up to 6 dB, plus Fuller bass's trim, with a limiter at −1 dBFS to catch peaks. |
+| **Deep bass** | Suggests the bass the speakers play thinly or not at all. What lies below where they are about 6 dB short of the target is driven into a clipper, and the harmonics between that point and three times it are mixed back ahead of the EQ, the bankstown recipe built from CamillaDSP's own mixers, biquads and limiter. Only offered when the measurement found a bass limit. |
 | **Calibration** | Off plays the plain speakers, level matched to the calibration, so only the tone changes. |
 
 ### Microphone calibration files (UMIK-1 and friends)

@@ -282,6 +282,8 @@ function micSummary(mic, position) {
 var SWITCHES = [
   { key: "loudness", option: "loudness", label: "Loudness", color: "yellow",
     description: "Fuller sound at low volume, like the loudness button on a stereo. Follows the output's volume." },
+  { key: "fuller_bass", option: "fuller-bass", label: "Fuller bass", color: "red",
+    description: "Lifts the bass 4 dB just above where the speakers give up, trimming the rest so it cannot clip." },
   { key: "louder", option: "louder", label: "Make it louder", color: "orange",
     description: "Gives back the volume the correction takes away. A limiter catches the peaks." },
   { key: "deep_bass", option: "deep-bass", label: "Deep bass", color: "magenta",
@@ -319,9 +321,10 @@ function switchSummary(options) {
   return on.length ? on.join(" · ") : "plain calibration"
 }
 
-function deepBassDescription(knee) {
-  if (!(knee > 0)) return "These speakers reach the bottom of the measurement; there is no missing bass to suggest."
-  return "Suggests notes below " + Math.round(knee) + " Hz, which these speakers cannot play, through their harmonics. Subtle when little music lies that low."
+function deepBassDescription(corner) {
+  if (!(corner > 0)) return "These speakers reach the bottom of the measurement; there is no missing bass to suggest."
+  return "Suggests the bass below " + Math.round(corner) + " Hz, which these speakers play thinly or not at all, through harmonics up to "
+    + Math.round(corner * 3) + " Hz."
 }
 
 // The lowest bass limit any channel of a fit found; 0 when the speakers
@@ -440,7 +443,9 @@ function switchedCurve(fit, options, share) {
   var opts = options || {}
   var level = correctionLevel(fit)
   var loud = opts.loudness === true ? loudnessCurve(fit.grid, share) : null
-  var makeup = opts.louder === true ? Math.min(Math.max(-level, 0), 6) : 0
+  var fuller = opts.fuller_bass === true
+  var shelfAt = fuller ? fullerBassFreq(fit) : 0
+  var makeup = opts.louder === true ? Math.min(Math.max(-level, 0), 6) + (fuller ? FULLER_BASS_DB : 0) : 0
   var out = []
   for (var i = 0; i < fit.grid.length; i++) {
     var sum = 0
@@ -449,15 +454,36 @@ function switchedCurve(fit, options, share) {
       // Calibration off: the plain speakers, at the calibration's level.
       sum += opts.calibration === false ? ch.measured[i] + level : ch.predicted[i]
     }
-    out.push(sum / fit.channels.length + (loud ? loud[i] : 0) + makeup)
+    var bass = fuller ? shelfDb("low", shelfAt, FULLER_BASS_DB, fit.grid[i]) - FULLER_BASS_DB : 0
+    out.push(sum / fit.channels.length + (loud ? loud[i] : 0) + bass + makeup)
   }
   return out
 }
 
 // Whether the switches change the response at all (Deep bass aside).
 function switchesShape(options) {
-  return !!options && (options.loudness === true || options.louder === true || options.calibration === false)
+  return !!options && (options.loudness === true || options.louder === true || options.fuller_bass === true
+    || options.calibration === false)
 }
+
+// Where Deep bass starts and where the Fuller bass shelf sits, the same as
+// deep_bass_corner() and fuller_bass_freq() in calibration_dsp.py: from where
+// the speakers are about 6 dB short (fit_floor, 1.1 times that point), and the
+// bass limit.
+function deepBassCorner(fit) {
+  var channels = (fit && fit.channels) || []
+  if (!channels.length) return 0
+  var fmin = Infinity
+  for (var i = 0; i < channels.length; i++) fmin = Math.min(fmin, Number(channels[i].fmin) || 20)
+  var corner = Math.min(Math.max(fitKnee(fit), fmin / 1.1), 200)
+  return corner > 30 ? Math.round(corner * 10) / 10 : 0
+}
+
+function fullerBassFreq(fit) {
+  return Math.min(Math.max(2 * fitKnee(fit), deepBassCorner(fit), 60), 200)
+}
+
+var FULLER_BASS_DB = 4
 
 // Average the channels into one curve for the graph.
 function meanCurve(curves) {
@@ -481,6 +507,7 @@ if (typeof module !== "undefined") {
     SWITCHES: SWITCHES, fitKnee: fitKnee, themeColors: themeColors, paletteColor: paletteColor, loudnessNote: loudnessNote,
     switchSummary: switchSummary, deepBassDescription: deepBassDescription,
     shelfDb: shelfDb, loudnessShare: loudnessShare, loudnessCurve: loudnessCurve, correctionLevel: correctionLevel,
-    switchedCurve: switchedCurve, switchesShape: switchesShape, targetDb: targetDb, targetCurve: targetCurve, logGrid: logGrid, frequencyX: frequencyX, meanCurve: meanCurve
+    switchedCurve: switchedCurve, switchesShape: switchesShape, deepBassCorner: deepBassCorner,
+    fullerBassFreq: fullerBassFreq, targetDb: targetDb, targetCurve: targetCurve, logGrid: logGrid, frequencyX: frequencyX, meanCurve: meanCurve
   }
 }

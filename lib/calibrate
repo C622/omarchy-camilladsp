@@ -8,7 +8,7 @@
   calibrate check                         replay through CamillaDSP and compare
   calibrate mic-cal --mic M (--file F | --clear)
                                           use a calibration file for a microphone
-  calibrate option NAME on|off            loudness, louder, deep-bass or calibration
+  calibrate option NAME on|off            loudness, fuller-bass, louder, deep-bass or calibration
   calibrate option loudness-level volume|some|full
   calibrate summary                       the session so far, as JSON
   calibrate reset                         forget the measurements
@@ -78,13 +78,16 @@ def preset_spec(fit):
 
     # What the whole correction does, preamp included: planned minus measured.
     corrections = [on_grid(c["predicted"]) - on_grid(c["measured"]) + fit["preamp_db"] for c in fit["channels"]]
-    return per_channel, fir_files, (min(knees) if knees else 0.0), dsp.correction_level(corrections)
+    knee = min(knees) if knees else 0.0
+    fmin = min(c.get("fmin", dsp.F_LOW) for c in fit["channels"])
+    return per_channel, fir_files, knee, dsp.correction_level(corrections), dsp.deep_bass_corner(knee, fmin)
 
 
 def write_preset(fit, options):
-    per_channel, fir_files, knee, level_db = preset_spec(fit)
+    per_channel, fir_files, knee, level_db, corner = preset_spec(fit)
     text = dsp.preset_yaml(fit["title"], fit["description"], per_channel, fit["preamp_db"], fir_files,
-                           options=options, knee=knee, level_db=level_db)
+                           options=options, knee=knee, level_db=level_db, deep_bass_hz=corner,
+                           fuller_hz=dsp.fuller_bass_freq(knee, corner))
     preset = os.path.join(PRESETS, fit["preset"] + ".yml")
     os.makedirs(PRESETS, exist_ok=True)
     with open(preset + ".tmp", "w") as f:
@@ -736,7 +739,7 @@ def main():
     group.add_argument("--file")
     group.add_argument("--clear", action="store_true")
     o = sub.add_parser("option")
-    o.add_argument("name", choices=["loudness", "louder", "deep-bass", "calibration", "loudness-level"])
+    o.add_argument("name", choices=["loudness", "fuller-bass", "louder", "deep-bass", "calibration", "loudness-level"])
     o.add_argument("value")
     sub.add_parser("summary")
     sub.add_parser("reset")

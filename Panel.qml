@@ -735,10 +735,12 @@ Panel {
               required property var modelData
               label: modelData.label
               tint: root.themeColor(modelData.color)
-              description: modelData.key === "deep_bass" ? Model.deepBassDescription(Model.fitKnee(root.activeFit))
-                : modelData.description
+              description: modelData.key === "deep_bass" ? Model.deepBassDescription(Model.deepBassCorner(root.activeFit))
+                : (modelData.key === "fuller_bass" && root.activeFit
+                  ? "Lifts the bass 4 dB from about " + Math.round(Model.fullerBassFreq(root.activeFit)) + " Hz down, trimming the rest so it cannot clip."
+                  : modelData.description)
               checked: root.options[modelData.key] === true
-              available: modelData.key !== "deep_bass" || Model.fitKnee(root.activeFit) > 0
+              available: modelData.key !== "deep_bass" || Model.deepBassCorner(root.activeFit) > 0
               onSwitched: function(on) { root.setOption(modelData.option, on) }
             }
           }
@@ -1085,7 +1087,7 @@ Panel {
     readonly property var switched: root.fitMatches && Model.switchesShape(root.options)
       ? Model.switchedCurve(root.fit, root.options, Model.loudnessShare(root.status, root.options)) : []
     // Deep bass acts below the bass limit and adds harmonics up to three times it.
-    readonly property real deepBassKnee: root.fitMatches && root.options.deep_bass === true ? Model.fitKnee(root.fit) : 0
+    readonly property real deepBassKnee: root.fitMatches && root.options.deep_bass === true ? Model.deepBassCorner(root.fit) : 0
     readonly property var planned: showCheck
       ? Model.meanCurve(root.check.channels.map(function(c) { return c.checked }))
       : (root.fitMatches ? Model.meanCurve(root.fit.channels.map(function(c) { return c.predicted }))

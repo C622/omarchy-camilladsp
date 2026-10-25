@@ -698,9 +698,9 @@ def preamp_for(corrections):
     return -round(max(peak, 0.0) + PREAMP_MARGIN, 2)
 
 
-# The four switches on a calibrated preset (see preset_yaml).
-DEFAULT_OPTIONS = {"loudness": False, "louder": False, "deep_bass": False, "calibration": True,
-                   "loudness_level": "volume"}
+# The switches on a calibrated preset (see preset_yaml).
+DEFAULT_OPTIONS = {"loudness": False, "fuller_bass": False, "louder": False, "deep_bass": False,
+                   "calibration": True, "loudness_level": "volume"}
 # How much quieter than the output's own volume the Loudness filter is told
 # the music plays. "volume" follows the output alone; the others are for a
 # volume set further on, on an amplifier, where the output sits at full.
@@ -709,13 +709,34 @@ LOUDNESS_LEVELS = {"volume": 0.0, "some": -12.0, "full": -25.0}
 # lib/loudness-tracker to fader Aux1. Full boost 20 dB below the reference.
 LOUDNESS_FADER = "Aux1"
 LOUDNESS = {"reference_level": -5.0, "low_boost": 6.0, "high_boost": 3.0}
-# Deep bass: what lies below the knee is driven into a hard clipper, and the
-# harmonics it makes between the knee and three times the knee are mixed back.
+# Fuller bass: a low shelf clear of the high-pass corner, paid for by an
+# input trim of the same size so the bass it adds cannot clip.
+FULLER_BASS_DB = 4.0
+# Deep bass: what lies below its corner is driven into a hard clipper, and the
+# harmonics it makes between the corner and three times it are mixed back.
 DEEP_BASS_DRIVE_DB = 18.0
 DEEP_BASS_CLIP_DB = -10.0
 DEEP_BASS_MIX_DB = -12.0
 MAX_MAKEUP_DB = 6.0
 LIMIT_DB = -1.0
+
+
+def deep_bass_corner(knee, fmin):
+    """Where Deep bass starts: where the speaker is about 6 dB short of the
+    target, not only where it gives up (the 12 dB knee), so its harmonics
+    cover the bass the speaker plays thinly as well as what it cannot play.
+
+    fmin is fit_floor(), 1.1 times the 6 dB point. 0 when the speaker
+    reaches the bottom of the measurement and nothing is missing.
+    """
+    corner = min(max(knee, fmin / 1.1), 200.0)
+    return round(corner, 1) if corner > 30 else 0.0
+
+
+def fuller_bass_freq(knee, corner):
+    """The Fuller bass shelf: twice the high-pass corner, where the cone can
+    still move freely, and not below the thinly played bass."""
+    return round(min(max(2 * knee, corner, 60.0), 200.0), 1)
 
 
 def correction_level(corrections):
@@ -730,13 +751,16 @@ def correction_level(corrections):
     return round(float(np.mean([np.mean(np.asarray(c)[band]) for c in corrections])), 2)
 
 
-def preset_yaml(title, description, per_channel, preamp_db, fir_files=None, options=None, knee=0.0, level_db=0.0):
+def preset_yaml(title, description, per_channel, preamp_db, fir_files=None, options=None, knee=0.0, level_db=0.0,
+                deep_bass_hz=None, fuller_hz=None):
     """CamillaDSP preset for a calibration, with its four switches applied.
 
     per_channel: list of dicts with "filters" (PEQ list), "delay_ms", "trim_db".
     fir_files: optional list of WAV paths, one per channel.
     options: the switches (DEFAULT_OPTIONS for keys). knee is the lowest
-    knee of the channels, level_db what correction_level() reported.
+    knee of the channels, level_db what correction_level() reported,
+    deep_bass_hz where Deep bass starts (deep_bass_corner(), the knee when
+    not given), fuller_hz where the Fuller bass shelf sits.
 
     Order: loudness, deep bass (ahead of the correction, so the EQ shapes the
     harmonics too), preamp, the per-channel correction, then make-up gain and a
@@ -761,7 +785,8 @@ def preset_yaml(title, description, per_channel, preamp_db, fir_files=None, opti
         filter_step([add_filter("loudness", "Loudness", fader=LOUDNESS_FADER, attenuate_mid="true",
                                 **LOUDNESS)])
 
-    deep_bass = opts["deep_bass"] and knee > 30
+    corner = knee if deep_bass_hz is None else deep_bass_hz
+    deep_bass = opts["deep_bass"] and corner > 30
     if deep_bass:
         # Each channel gets a copy on channel + n that becomes its harmonics.
         mixers += ["  deep_bass_split:", "    channels:", f"      in: {channels}", f"      out: {channels * 2}",
@@ -774,14 +799,14 @@ def preset_yaml(title, description, per_channel, preamp_db, fir_files=None, opti
             mixers += [f"      - dest: {dest}", "        sources:", f"          - channel: {dest}",
                        f"          - channel: {dest + channels}", f"            gain: {DEEP_BASS_MIX_DB}"]
         steps += ["  - type: Mixer", "    name: deep_bass_split"]
-        names = [add_filter("deep_bass_below", "Biquad", type="Lowpass", freq=round(knee, 1), q=0.707),
+        names = [add_filter("deep_bass_below", "Biquad", type="Lowpass", freq=round(corner, 1), q=0.707),
                  add_filter("deep_bass_drive", "Gain", gain=DEEP_BASS_DRIVE_DB),
                  add_filter("deep_bass_clip", "Limiter", soft_clip="false", clip_limit=DEEP_BASS_CLIP_DB),
                  # Two high-passes: the fundamentals the clipper was fed must not
                  # come back, only what it made above them.
-                 add_filter("deep_bass_above", "Biquad", type="Highpass", freq=round(knee, 1), q=0.707),
-                 add_filter("deep_bass_above2", "Biquad", type="Highpass", freq=round(knee, 1), q=0.707),
-                 add_filter("deep_bass_top", "Biquad", type="Lowpass", freq=round(knee * 3, 1), q=0.707)]
+                 add_filter("deep_bass_above", "Biquad", type="Highpass", freq=round(corner, 1), q=0.707),
+                 add_filter("deep_bass_above2", "Biquad", type="Highpass", freq=round(corner, 1), q=0.707),
+                 add_filter("deep_bass_top", "Biquad", type="Lowpass", freq=round(corner * 3, 1), q=0.707)]
         filter_step(names, range(channels, channels * 2))
         steps += ["  - type: Mixer", "    name: deep_bass_join"]
 
@@ -808,10 +833,18 @@ def preset_yaml(title, description, per_channel, preamp_db, fir_files=None, opti
         # The plain speakers, as loud as the calibration plays them.
         filter_step([add_filter("level_match", "Gain", gain=level_db)])
 
-    makeup = min(max(-level_db, 0.0), MAX_MAKEUP_DB) if opts["louder"] else 0.0
+    fuller = opts["fuller_bass"]
+    if fuller:
+        shelf = fuller_hz if fuller_hz else fuller_bass_freq(knee, corner)
+        filter_step([add_filter("fuller_trim", "Gain", gain=-FULLER_BASS_DB),
+                     add_filter("fuller_bass", "Biquad", type="Lowshelf", freq=shelf, gain=FULLER_BASS_DB, q=0.707)])
+
+    # Make it louder gives back what the correction took and what Fuller bass
+    # trimmed; the limiter catches what that pushes past full scale.
+    makeup = (min(max(-level_db, 0.0), MAX_MAKEUP_DB) + (FULLER_BASS_DB if fuller else 0.0)) if opts["louder"] else 0.0
     if makeup:
         filter_step([add_filter("makeup", "Gain", gain=round(makeup, 2))])
-    if opts["louder"] or deep_bass or opts["loudness"]:
+    if opts["louder"] or deep_bass or opts["loudness"] or fuller:
         # Hard clipping: CamillaDSP's soft clip bends the signal well below the
         # limit, which measured as distortion on clean music; hard leaves
         # everything under -1 dBFS untouched.

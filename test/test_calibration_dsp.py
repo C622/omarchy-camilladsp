@@ -240,6 +240,26 @@ class SwitchesTest(unittest.TestCase):
         self.assertIn("fader: Aux1", text)
         self.assertIn("attenuate_mid: true", text)
 
+    def test_fuller_bass_is_a_trimmed_shelf(self):
+        text = dsp.preset_yaml("t", "d", self.PER, -0.5, options={"fuller_bass": True}, knee=46.0,
+                               level_db=-3.0, deep_bass_hz=80.0, fuller_hz=92.0)
+        self.assertIn("fuller_bass:", text)
+        self.assertIn("type: Lowshelf", text)
+        self.assertIn("freq: 92.0", text)
+        self.assertIn("gain: -4.0", text)
+        self.assertIn("limiter:", text)
+        # Make it louder gives the trim back as well as the correction's 3 dB.
+        louder = dsp.preset_yaml("t", "d", self.PER, -0.5, options={"fuller_bass": True, "louder": True},
+                                 knee=46.0, level_db=-3.0, deep_bass_hz=80.0, fuller_hz=92.0)
+        self.assertIn("gain: 7.0", louder)
+
+    def test_deep_bass_starts_where_the_speaker_plays_thinly(self):
+        self.assertEqual(dsp.deep_bass_corner(46.0, 88.0), 80.0)
+        self.assertEqual(dsp.deep_bass_corner(0.0, dsp.F_LOW), 0.0)
+        text = dsp.preset_yaml("t", "d", self.PER, -0.5, options={"deep_bass": True}, knee=46.0,
+                               level_db=-3.0, deep_bass_hz=80.0)
+        self.assertIn("freq: 240.0", text)
+
     def test_correction_level_is_the_midband_mean(self):
         corr = np.where((dsp.GRID >= 200) & (dsp.GRID <= 5000), -4.0, 10.0)
         self.assertAlmostEqual(dsp.correction_level([corr, corr]), -4.0)
