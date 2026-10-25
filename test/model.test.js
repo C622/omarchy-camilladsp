@@ -117,6 +117,13 @@ const tests = {
     const colors = M.themeColors('mode = "dark"\naccent = "#89b4fa"\nred = "#f38ba8"\n# green = "#000000"\nbright_red = "#F38BA8ff"\n')
     assert.deepStrictEqual(colors, { accent: "#89b4fa", red: "#f38ba8", bright_red: "#F38BA8ff" })
     assert.ok(M.SWITCHES.every(s => s.color))
+    // Terminal-style themes name the palette color0 to color15.
+    const ansi = M.themeColors("accent = '#7aa2f7'\ncolor1 = \"#f7768e\"\ncolor2 = \"#9ece6a\"\ncolor4 = \"#7aa2f7\"\ncolor9 = \"#ff899d\"\n")
+    assert.strictEqual(M.paletteColor(ansi, "red"), "#f7768e")
+    assert.strictEqual(M.paletteColor(ansi, "green"), "#9ece6a")
+    assert.strictEqual(M.paletteColor(ansi, "orange"), "#ff899d")
+    assert.strictEqual(M.paletteColor(ansi, "cyan"), "")
+    assert.strictEqual(M.paletteColor(colors, "orange"), "#F38BA8ff")
   },
   "loudness note, switch summary, deep bass text"() {
     const at = v => ({ dsp: { GetFaders: [{ volume: 0 }, { volume: v }] } })

@@ -341,10 +341,27 @@ function themeColors(text) {
   var out = {}
   var lines = String(text || "").split("\n")
   for (var i = 0; i < lines.length; i++) {
-    var m = /^\s*([a-z_]+)\s*=\s*"(#[0-9a-fA-F]{6}(?:[0-9a-fA-F]{2})?)"/.exec(lines[i])
+    var m = /^\s*([a-z_][a-z0-9_]*)\s*=\s*["'](#[0-9a-fA-F]{6}(?:[0-9a-fA-F]{2})?)["']/.exec(lines[i])
     if (m) out[m[1]] = m[2]
   }
   return out
+}
+
+// Themes name their palette either by colour (red = ...) or the terminal way
+// (color1 = ...), where 1 to 6 are red, green, yellow, blue, magenta and cyan.
+// Orange has no terminal slot; bright red (color9) is the nearest.
+var PALETTE_NAMES = {
+  red: ["red", "color1"], green: ["green", "color2"], yellow: ["yellow", "color3"],
+  blue: ["blue", "color4"], magenta: ["magenta", "color5"], cyan: ["cyan", "color6"],
+  orange: ["orange", "bright_red", "color9", "red", "color1"]
+}
+
+function paletteColor(colors, name) {
+  var keys = PALETTE_NAMES[name] || [name]
+  for (var i = 0; i < keys.length; i++) {
+    if (colors && colors[keys[i]]) return colors[keys[i]]
+  }
+  return ""
 }
 
 // Average the channels into one curve for the graph.
@@ -366,7 +383,7 @@ if (typeof module !== "undefined") {
     tooltip: tooltip, usableMics: usableMics, micInfo: micInfo, calibrationOptions: calibrationOptions, calibrationPath: calibrationPath,
     isMeasurementMic: isMeasurementMic, calibrationHint: calibrationHint, event: event, fitSummary: fitSummary,
     checkSummary: checkSummary, curvePoints: curvePoints, smoothCurve: smoothCurve, micSummary: micSummary,
-    SWITCHES: SWITCHES, fitKnee: fitKnee, themeColors: themeColors, loudnessNote: loudnessNote,
+    SWITCHES: SWITCHES, fitKnee: fitKnee, themeColors: themeColors, paletteColor: paletteColor, loudnessNote: loudnessNote,
     switchSummary: switchSummary, deepBassDescription: deepBassDescription, targetDb: targetDb, targetCurve: targetCurve, logGrid: logGrid, frequencyX: frequencyX, meanCurve: meanCurve
   }
 }

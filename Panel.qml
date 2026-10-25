@@ -56,7 +56,7 @@ Panel {
     cyan: "#8bd5ca", magenta: "#c6a0f6", red: "#ed8796"
   })
   function themeColor(name) {
-    return themePalette[name] || fallbackColors[name] || Commons.Color.accent
+    return Model.paletteColor(themePalette, name) || fallbackColors[name] || Commons.Color.accent
   }
   readonly property color colorMeasured: themeColor("orange")
   readonly property color colorPlanned: themeColor("blue")
@@ -74,7 +74,7 @@ Panel {
     printErrors: false
     onLoaded: {
       root.themePalette = Model.themeColors(text())
-      console.info("community.camilladsp: theme colours from " + path + ": " + Object.keys(root.themePalette).length)
+      console.info("community.camilladsp: theme colours from " + path + ": " + Object.keys(root.themePalette).join(" "))
     }
     onFileChanged: reload()
   }
