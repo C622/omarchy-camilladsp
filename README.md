@@ -1,8 +1,14 @@
 # CamillaDSP for Omarchy
 
+<img src="screenshot.png" alt="The panel: a calibrated preset playing, the sound switches, the microphone and its calibration file, and the measured, planned and switched response" width="340" align="right">
+
 Run every sound on your desktop through [CamillaDSP](https://github.com/HEnquist/camilladsp), switch presets from the bar, and calibrate your speakers or your room with a microphone: it plays sweeps, measures, fits the filters, and checks the result, all from the panel.
 
-The idea comes from [Speaker Calibrator](https://github.com/thefreshoffice/omarchy-speaker-calibrator), which does this beautifully for laptop speakers with a PipeWire filter-chain. Putting CamillaDSP underneath opens up what a filter-chain makes awkward: separate correction per speaker, FIR (convolution) correction, delay and level alignment, averaging several microphone positions for room correction, and presets you can write or import from REW and other tools.
+The aim is a real DSP engine that anyone can use to make their sound better, without having to learn one first. CamillaDSP is that engine; this plugin is the easy way in.
+
+It stands on the shoulders of [Speaker Calibrator](https://github.com/thefreshoffice/omarchy-speaker-calibrator), which made measuring and correcting speakers from the Omarchy bar feel effortless, with a PipeWire filter-chain underneath. Putting CamillaDSP there instead opens up what a filter-chain makes awkward: separate correction per speaker, FIR (convolution) correction, delay and level alignment, averaging several microphone positions for room correction, measurement microphones with their calibration files, and presets you can write or import from REW and other tools. See [Thanks](#thanks) for more.
+
+<br clear="right">
 
 ## Install
 
@@ -127,6 +133,14 @@ test/run            # DSP tests on a simulated speaker and room, plus the panel'
 ```
 
 The DSP tests build a speaker with known resonances, a desk reflection, a late room reflection, an inter-speaker delay and noise. They check that the analysis recovers it, that the fit corrects it at least as well as the exact inverse, and that the safety gates refuse clipping, silence and noisy rooms.
+
+## Thanks
+
+**[CamillaDSP](https://github.com/HEnquist/camilladsp)** by Henrik Enquist does all of the actual sound processing: the filters, the convolution, the mixers, the loudness compensation and the limiter, at low latency and low CPU, with a native PipeWire backend and a websocket for control. This plugin only measures, writes configs for it, and puts a panel in front of it. If you use it, consider supporting the project, and read its documentation: there is far more in it than this panel exposes. CamillaDSP is licensed GPL-3.0 or MPL-2.0; the plugin does not bundle it, it installs or builds it on your machine.
+
+**[Speaker Calibrator](https://github.com/thefreshoffice/omarchy-speaker-calibrator)** by Michael de By is where the idea and the workflow come from: measure from the panel in thirty seconds, refuse a bad measurement rather than install it, protect the speakers with a high-pass, cut rather than boost, check the result. The sound switches follow its switches, in name and in spirit: Loudness, Make it louder, Deep bass and Calibration, with Fuller bass after its *Bass: Full*. If you have a laptop and want the simplest thing that works, use it. It is very good at that, and its README is a small education in measuring speakers properly. This plugin is written separately and shares no code with it; it is the same goal, aimed at desktop speakers, measurement microphones and rooms, and built on a full DSP engine.
+
+**bankstown**, the bass enhancer James Calligeros wrote for Asahi Linux, is the recipe behind Deep bass: saturate what the speaker cannot play, and add back the harmonics it can.
 
 ## License
 
