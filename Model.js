@@ -294,8 +294,9 @@ var SWITCHES = [
 // sets: none above the filter's reference level (-5 dB, LOUDNESS in
 // calibration_dsp.py), all of it 20 dB below. Empty while it is unknown.
 function loudnessNote(status) {
-  var faders = status && status.dsp ? status.dsp.GetFaders : null
-  if (!faders || !faders[1]) return ""
+  if (!status || !status.dsp) return "CamillaDSP is not reporting the listening level yet."
+  var faders = status.dsp.GetFaders
+  if (!faders || !faders[1]) return "CamillaDSP is not reporting the listening level."
   var level = Number(faders[1].volume)
   if (!isFinite(level)) return ""
   var share = Math.max(0, Math.min(1, (-5 - level) / 20))
@@ -364,6 +365,100 @@ function paletteColor(colors, name) {
   return ""
 }
 
+// ---------- What the switches do, for the graph ----------
+
+// Magnitude in dB at hz of an RBJ shelf with slope 12 (Q 0.707), the shelves
+// CamillaDSP's Loudness filter uses, at 48 kHz.
+function shelfDb(kind, freq, gain, hz) {
+  var fs = 48000
+  var a = Math.pow(10, gain / 40)
+  var w0 = 2 * Math.PI * freq / fs
+  var cs = Math.cos(w0), sn = Math.sin(w0)
+  var alpha = sn / 2 * Math.SQRT2
+  var beta = 2 * Math.sqrt(a) * alpha
+  var b, d
+  if (kind === "low") {
+    b = [a * ((a + 1) - (a - 1) * cs + beta), 2 * a * ((a - 1) - (a + 1) * cs), a * ((a + 1) - (a - 1) * cs - beta)]
+    d = [(a + 1) + (a - 1) * cs + beta, -2 * ((a - 1) + (a + 1) * cs), (a + 1) + (a - 1) * cs - beta]
+  } else {
+    b = [a * ((a + 1) + (a - 1) * cs + beta), -2 * a * ((a - 1) + (a + 1) * cs), a * ((a + 1) + (a - 1) * cs - beta)]
+    d = [(a + 1) - (a - 1) * cs + beta, 2 * ((a - 1) - (a + 1) * cs), (a + 1) - (a - 1) * cs - beta]
+  }
+  var w = 2 * Math.PI * hz / fs
+  function mag(c) {
+    var re = c[0] + c[1] * Math.cos(w) + c[2] * Math.cos(2 * w)
+    var im = -c[1] * Math.sin(w) - c[2] * Math.sin(2 * w)
+    return Math.sqrt(re * re + im * im)
+  }
+  return 20 * Math.log10(mag(b) / mag(d))
+}
+
+// LOUDNESS and LOUDNESS_LEVELS in calibration_dsp.py.
+var LOUDNESS = { reference: -5, low: 6, high: 3 }
+var LOUDNESS_LEVELS = { volume: 0, some: -12, full: -25 }
+
+// How much of the Loudness boost applies, 0 to 1: from the fader the tracker
+// set when CamillaDSP reports it, otherwise from the strength alone.
+function loudnessShare(status, options) {
+  var faders = status && status.dsp ? status.dsp.GetFaders : null
+  var level = faders && faders[1] ? Number(faders[1].volume)
+    : LOUDNESS_LEVELS[(options && options.loudness_level) || "volume"] || 0
+  return Math.max(0, Math.min(1, (LOUDNESS.reference - level) / 20))
+}
+
+// The Loudness filter's response at share of its boost: two shelves, and the
+// mids turned down by the larger boost so it cannot clip.
+function loudnessCurve(grid, share) {
+  var low = LOUDNESS.low * share, high = LOUDNESS.high * share
+  var out = []
+  for (var i = 0; i < (grid || []).length; i++)
+    out.push(shelfDb("low", 70, low, grid[i]) + shelfDb("high", 3500, high, grid[i]) - Math.max(low, high))
+  return out
+}
+
+// What the correction does to the level, as correction_level() works it out:
+// the mean of planned minus measured, preamp included, from 200 Hz to 5 kHz.
+function correctionLevel(fit) {
+  if (!fit || !fit.channels || !fit.grid) return 0
+  var sum = 0, count = 0
+  for (var c = 0; c < fit.channels.length; c++) {
+    var ch = fit.channels[c]
+    for (var i = 0; i < fit.grid.length; i++) {
+      if (fit.grid[i] < 200 || fit.grid[i] > 5000) continue
+      sum += ch.predicted[i] - ch.measured[i] + (Number(fit.preamp_db) || 0)
+      count++
+    }
+  }
+  return count ? sum / count : 0
+}
+
+// The planned response with the switches applied, averaged over the
+// channels, on the fit's own grid. Deep bass is not here: it adds harmonics,
+// which no response curve can show, and the graph marks its band instead.
+function switchedCurve(fit, options, share) {
+  if (!fit || !fit.channels || !fit.grid) return []
+  var opts = options || {}
+  var level = correctionLevel(fit)
+  var loud = opts.loudness === true ? loudnessCurve(fit.grid, share) : null
+  var makeup = opts.louder === true ? Math.min(Math.max(-level, 0), 6) : 0
+  var out = []
+  for (var i = 0; i < fit.grid.length; i++) {
+    var sum = 0
+    for (var c = 0; c < fit.channels.length; c++) {
+      var ch = fit.channels[c]
+      // Calibration off: the plain speakers, at the calibration's level.
+      sum += opts.calibration === false ? ch.measured[i] + level : ch.predicted[i]
+    }
+    out.push(sum / fit.channels.length + (loud ? loud[i] : 0) + makeup)
+  }
+  return out
+}
+
+// Whether the switches change the response at all (Deep bass aside).
+function switchesShape(options) {
+  return !!options && (options.loudness === true || options.louder === true || options.calibration === false)
+}
+
 // Average the channels into one curve for the graph.
 function meanCurve(curves) {
   if (!curves || curves.length === 0) return []
@@ -384,6 +479,8 @@ if (typeof module !== "undefined") {
     isMeasurementMic: isMeasurementMic, calibrationHint: calibrationHint, event: event, fitSummary: fitSummary,
     checkSummary: checkSummary, curvePoints: curvePoints, smoothCurve: smoothCurve, micSummary: micSummary,
     SWITCHES: SWITCHES, fitKnee: fitKnee, themeColors: themeColors, paletteColor: paletteColor, loudnessNote: loudnessNote,
-    switchSummary: switchSummary, deepBassDescription: deepBassDescription, targetDb: targetDb, targetCurve: targetCurve, logGrid: logGrid, frequencyX: frequencyX, meanCurve: meanCurve
+    switchSummary: switchSummary, deepBassDescription: deepBassDescription,
+    shelfDb: shelfDb, loudnessShare: loudnessShare, loudnessCurve: loudnessCurve, correctionLevel: correctionLevel,
+    switchedCurve: switchedCurve, switchesShape: switchesShape, targetDb: targetDb, targetCurve: targetCurve, logGrid: logGrid, frequencyX: frequencyX, meanCurve: meanCurve
   }
 }

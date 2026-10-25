@@ -130,12 +130,29 @@ const tests = {
     assert.strictEqual(M.loudnessNote(at(0)), "Now: no boost (listening level 0 dB).")
     assert.strictEqual(M.loudnessNote(at(-15)), "Now: 50% of the boost (listening level -15 dB).")
     assert.strictEqual(M.loudnessNote(at(-40)), "Now: the full boost (listening level -40 dB).")
-    assert.strictEqual(M.loudnessNote({ dsp: null }), "")
+    assert.match(M.loudnessNote({ dsp: null }), /not reporting/)
     assert.strictEqual(M.switchSummary({ loudness: true, louder: false, deep_bass: true, calibration: true }), "loudness · deep bass")
     assert.strictEqual(M.switchSummary({ calibration: false }), "calibration off")
     assert.strictEqual(M.switchSummary({}), "plain calibration")
     assert.match(M.deepBassDescription(62.4), /below 62 Hz/)
     assert.match(M.deepBassDescription(0), /no missing bass/)
+  },
+  "the graph shows what the switches do"() {
+    const grid = [50, 300, 1000, 3000, 12000]
+    // A correction that turns everything down 4 dB, preamp included.
+    const fit = { grid, preamp_db: -1, channels: [{ measured: [0, 0, 0, 0, 0], predicted: [-3, -3, -3, -3, -3] }] }
+    assert.strictEqual(M.correctionLevel(fit), -4)
+    assert.deepStrictEqual(M.switchedCurve(fit, { calibration: true }, 0), [-3, -3, -3, -3, -3])
+    // Make it louder gives the 4 dB back.
+    assert.deepStrictEqual(M.switchedCurve(fit, { louder: true }, 0), [1, 1, 1, 1, 1])
+    // Calibration off: the plain speakers at the calibration's level.
+    assert.deepStrictEqual(M.switchedCurve(fit, { calibration: false }, 0), [-4, -4, -4, -4, -4])
+    // Loudness lifts the bass against the mids.
+    const loud = M.switchedCurve(fit, { loudness: true }, 1)
+    assert.ok(loud[0] - loud[2] > 4, JSON.stringify(loud))
+    assert.ok(M.switchesShape({ louder: true }) && !M.switchesShape({ deep_bass: true, calibration: true }))
+    assert.strictEqual(M.loudnessShare({ dsp: { GetFaders: [{}, { volume: -15 }] } }, {}), 0.5)
+    assert.strictEqual(M.loudnessShare(null, { loudness_level: "full" }), 1)
   },
   "curve points span the box and clamp"() {
     const pts = M.curvePoints([20, 200, 2000, 20000], [0, 15, -15, 40], 300, 100, 15)

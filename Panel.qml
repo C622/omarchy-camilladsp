@@ -63,6 +63,8 @@ Panel {
   readonly property color colorChecked: themeColor("green")
   readonly property color colorTarget: themeColor("yellow")
   readonly property color colorOn: themeColor("green")
+  readonly property color colorSwitched: themeColor("cyan")
+  readonly property color colorDeepBass: themeColor("magenta")
   readonly property var targetColors: ({
     flat: themeColor("cyan"), warm: themeColor("orange"), room: themeColor("magenta")
   })
@@ -1070,6 +1072,11 @@ Panel {
     // preview of what they would do.
     readonly property var targetCurve: grid ? Model.targetCurve(root.target, grid) : []
     readonly property bool showCheck: root.fitMatches && !!root.check
+    // The built calibration with the switches applied, when they change it.
+    readonly property var switched: root.fitMatches && Model.switchesShape(root.options)
+      ? Model.switchedCurve(root.fit, root.options, Model.loudnessShare(root.status, root.options)) : []
+    // Deep bass acts below the bass limit and adds harmonics up to three times it.
+    readonly property real deepBassKnee: root.fitMatches && root.options.deep_bass === true ? Model.fitKnee(root.fit) : 0
     readonly property var planned: showCheck
       ? Model.meanCurve(root.check.channels.map(function(c) { return c.checked }))
       : (root.fitMatches ? Model.meanCurve(root.fit.channels.map(function(c) { return c.predicted }))
@@ -1079,6 +1086,8 @@ Panel {
 
     onMeasuredChanged: requestPaint()
     onPlannedChanged: requestPaint()
+    onSwitchedChanged: requestPaint()
+    onDeepBassKneeChanged: requestPaint()
     Connections {
       target: root
       function onThemePaletteChanged() { graph.requestPaint() }
@@ -1115,14 +1124,28 @@ Panel {
       }
       ctx.beginPath(); ctx.moveTo(0, height / 2); ctx.lineTo(width, height / 2); ctx.stroke()
       ctx.restore()
+      if (deepBassKnee > 0) {
+        var below = Model.frequencyX(grid, deepBassKnee, width)
+        var top = Model.frequencyX(grid, deepBassKnee * 3, width)
+        ctx.save()
+        ctx.fillStyle = root.colorDeepBass
+        // Faint where the missing notes are, stronger where their harmonics go.
+        ctx.globalAlpha = 0.07
+        ctx.fillRect(0, 0, below, height)
+        ctx.globalAlpha = 0.16
+        ctx.fillRect(below, 0, top - below, height)
+        ctx.restore()
+      }
       stroke(ctx, measured, root.colorMeasured, 0.75, 1.5, false, true)
       stroke(ctx, targetCurve, root.colorTarget, 0.9, 1.5, true, false)
-      stroke(ctx, planned, showCheck ? root.colorChecked : root.colorPlanned, 1.0, 2, false, true)
+      stroke(ctx, planned, showCheck ? root.colorChecked : root.colorPlanned, switched.length > 0 ? 0.55 : 1.0, 2, false, true)
+      stroke(ctx, switched, root.colorSwitched, 1.0, 2, false, true)
     }
 
-    // A key with a sample of each line in its colour.
-    Row {
+    // A key with a sample of each line in its colour; wraps when it is long.
+    Flow {
       anchors.left: parent.left
+      anchors.right: parent.right
       anchors.bottom: parent.bottom
       spacing: Style.space(10)
 
@@ -1133,6 +1156,8 @@ Panel {
         label: graph.showCheck ? "with correction" : "planned"
       }
       LegendItem { tint: root.colorTarget; label: "target"; dashed: true }
+      LegendItem { visible: graph.switched.length > 0; tint: root.colorSwitched; label: "with switches" }
+      LegendItem { visible: graph.deepBassKnee > 0; tint: root.colorDeepBass; label: "deep bass" }
       LegendItem {
         visible: graph.planned.length === 0 && root.previewing
         tint: root.colorPlanned
