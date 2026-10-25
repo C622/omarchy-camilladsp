@@ -3,7 +3,16 @@
 // Pure helpers for Panel.qml, kept apart so they can be tested with node.
 
 var SINK = "camilladsp"
-var CALIBRATED = "80-calibrated"
+// Presets the calibrator builds, one per Sound and Correction combination
+// (lib/calibrate preset_id); 80-calibrated is the single preset of 0.1.
+
+function calibrationId(target, mode) {
+  return "80-cal-" + mode + "-" + target
+}
+
+function isCalibrated(id) {
+  return /^80-cal(-|ibrated$)/.test(String(id || ""))
+}
 
 function parse(text) {
   try {
@@ -254,7 +263,7 @@ function meanCurve(curves) {
 
 if (typeof module !== "undefined") {
   module.exports = {
-    parse: parse, rateLabel: rateLabel, loadLabel: loadLabel, state: state, presetTitle: presetTitle,
+    calibrationId: calibrationId, isCalibrated: isCalibrated, parse: parse, rateLabel: rateLabel, loadLabel: loadLabel, state: state, presetTitle: presetTitle,
     heroStatus: heroStatus, outputLabel: outputLabel, bypassReason: bypassReason, clipped: clipped,
     tooltip: tooltip, usableMics: usableMics, micInfo: micInfo, calibrationOptions: calibrationOptions, calibrationPath: calibrationPath,
     isMeasurementMic: isMeasurementMic, calibrationHint: calibrationHint, event: event, fitSummary: fitSummary,

@@ -91,6 +91,15 @@ const tests = {
     assert.ok(Math.abs(grid[0] - 20) < 1e-9 && Math.abs(grid[3] - 20000) < 1e-6)
     assert.strictEqual(M.targetCurve("warm", grid).length, 4)
   },
+  "calibration presets are named per combination"() {
+    // Must match preset_id() in lib/calibrate.
+    assert.strictEqual(M.calibrationId("flat", "peq"), "80-cal-peq-flat")
+    assert.strictEqual(M.calibrationId("room", "fir"), "80-cal-fir-room")
+    assert.ok(M.isCalibrated("80-cal-fir-warm"))
+    assert.ok(M.isCalibrated("80-calibrated"))
+    assert.ok(!M.isCalibrated("10-bass-boost"))
+    assert.ok(!M.isCalibrated("80-calibrated-but-mine"))
+  },
   "curve points span the box and clamp"() {
     const pts = M.curvePoints([20, 200, 2000, 20000], [0, 15, -15, 40], 300, 100, 15)
     assert.strictEqual(pts[0].x, 0)

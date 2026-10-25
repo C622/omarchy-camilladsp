@@ -56,7 +56,7 @@ Usage: camilladsp-omarchy <command>
   reset-clipping         Zero CamillaDSP's clipped-samples counter
   calibrate <command>    Measure with a microphone and build a preset:
                            devices | measure --output O --mic M [--position nearfield|listening]
-                           fit [--target flat|warm|room|FILE] [--mode peq|fir] [--preview] | apply | check
+                           fit [--target flat|warm|room|FILE] [--mode peq|fir] [--preview] | apply [id] | check
                            summary | reset
   uninstall              Turn off and remove the services and sink (presets are kept)
 USAGE
@@ -590,9 +590,12 @@ cmd_calibrate() {
   local status
   case ${1:-} in
     apply)
-      # Fitting writes the preset; applying it is turning CamillaDSP on with it.
-      [[ -f $presets_dir/80-calibrated.yml ]] || fail "no calibration yet, run: camilladsp-omarchy calibrate fit"
-      cmd_preset 80-calibrated >/dev/null
+      # Fitting writes the preset; applying it is turning CamillaDSP on with
+      # it. Without an id, the calibration built last.
+      local id="${2:-}"
+      [[ -n $id ]] || id="$(jq -r '.preset // empty' "$state_dir/calibration/fit.json" 2>/dev/null)"
+      [[ -n $id && -f $presets_dir/$id.yml ]] || fail "no calibration yet, run: camilladsp-omarchy calibrate fit"
+      cmd_preset "$id" >/dev/null
       cmd_on
       ;;
     "")

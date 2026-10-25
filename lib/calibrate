@@ -39,8 +39,22 @@ import calibration_dsp as dsp  # noqa: E402
 STATE = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "omarchy-camilladsp")
 CONFIG = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "camilladsp")
 SESSION = os.path.join(STATE, "calibration")
-PRESET_ID = "80-calibrated"
-PRESET = os.path.join(CONFIG, "presets", PRESET_ID + ".yml")
+PRESETS = os.path.join(CONFIG, "presets")
+TARGET_NAMES = {"flat": "Neutral", "warm": "Warm", "room": "Room"}
+MODE_NAMES = {"peq": "EQ", "fir": "FIR"}
+
+
+def preset_id(target, mode):
+    """One preset per combination of settings, so building another combination
+    adds a preset to compare with instead of replacing the last one."""
+    name = target if target in TARGET_NAMES else os.path.splitext(os.path.basename(target))[0]
+    slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "custom"
+    return f"80-cal-{mode}-{slug}"
+
+
+def preset_title(target, mode):
+    name = TARGET_NAMES.get(target) or os.path.splitext(os.path.basename(target))[0]
+    return f"Calibrated {MODE_NAMES[mode]} · {name}"
 FILTERS = os.path.join(CONFIG, "filters")
 MIC_CALIBRATIONS = os.path.join(CONFIG, "mic-calibration")
 ASSIGNMENTS = os.path.join(MIC_CALIBRATIONS, "assignments.json")
@@ -467,7 +481,7 @@ def cmd_fit(args):
         if args.mode == "fir":
             taps, knee, corr = dsp.fir_correction(c, target)
             filters = [{"type": "Highpass", "freq": round(knee, 1), "q": 0.707}] if knee > 30 else []
-            path = os.path.join(FILTERS, f"calibrated-ch{ch}.wav")
+            path = os.path.join(FILTERS, f"{preset_id(args.target, args.mode)}-ch{ch}.wav")
             if not args.preview:
                 os.makedirs(FILTERS, exist_ok=True)
                 wavfile.write(path, dsp.FS, taps)
@@ -492,11 +506,12 @@ def cmd_fit(args):
 
     preamp = dsp.preamp_for(corrections)
     name = next((s.get("description") for s in sinks() if s["name"] == session[0]["output"]), session[0]["output"])
-    title = f"Calibrated: {name}"
-    detail = (f"{len(session)} position{'s' if len(session) != 1 else ''}, {args.target} target, "
+    pid = preset_id(args.target, args.mode)
+    title = preset_title(args.target, args.mode)
+    detail = (f"For {name}: {len(session)} position{'s' if len(session) != 1 else ''}, {args.target} target, "
               f"{'FIR' if args.mode == 'fir' else 'parametric EQ'}"
               f"{', aligned' if align else ''}, measured {session[-1]['time'][:10]}")
-    fit = {"preset": PRESET_ID, "title": title, "description": detail, "target": args.target, "mode": args.mode,
+    fit = {"preset": pid, "title": title, "description": detail, "target": args.target, "mode": args.mode,
            "aligned": align, "preamp_db": preamp, "output": session[0]["output"], "mic": session[0]["mic"],
            "positions": len(session), "grid": [round(float(f), 1) for f in dsp.GRID[::4]],
            "target_curve": display(target), "channels": report,
@@ -508,13 +523,17 @@ def cmd_fit(args):
         return
 
     text = dsp.preset_yaml(title, detail, per_channel, preamp, fir_files)
-    os.makedirs(os.path.dirname(PRESET), exist_ok=True)
-    with open(PRESET + ".tmp", "w") as f:
+    preset = os.path.join(PRESETS, pid + ".yml")
+    os.makedirs(PRESETS, exist_ok=True)
+    with open(preset + ".tmp", "w") as f:
         f.write(text)
-    os.replace(PRESET + ".tmp", PRESET)
+    os.replace(preset + ".tmp", preset)
+    # Each preset keeps the fit it was built from, and the check made of it,
+    # so each can be checked and shown on its own. fit.json is the latest.
+    save_json(os.path.join(SESSION, "fits", pid + ".json"), fit)
     save_json(os.path.join(SESSION, "fit.json"), fit)
     try:
-        os.remove(os.path.join(SESSION, "check.json"))
+        os.remove(os.path.join(SESSION, "checks", pid + ".json"))
     except OSError:
         pass
     emit("result", **fit)
@@ -530,19 +549,19 @@ def _fir_residual(channel, target, filters, corr, info):
 
 
 def cmd_check(args):
-    fit = load_json(os.path.join(SESSION, "fit.json"))
-    if not fit:
-        raise Refused("Build a calibration first.")
+    # The check is of whichever calibrated preset is playing.
     state = subprocess.run(["systemctl", "--user", "is-active", "omarchy-camilladsp.service"],
                            capture_output=True, text=True).stdout.strip()
     if state != "active" or default_sink() != DSP_SINK:
-        raise Refused("Turn CamillaDSP on with the calibrated preset first.")
+        raise Refused("Turn CamillaDSP on with a calibrated preset first.")
     try:
         with open(os.path.join(STATE, "preset")) as f:
-            if f.read().strip() != PRESET_ID:
-                raise Refused("Select the calibrated preset first.")
+            active = f.read().strip()
     except OSError:
-        raise Refused("Select the calibrated preset first.")
+        active = ""
+    fit = load_json(os.path.join(SESSION, "fits", active + ".json")) if active else None
+    if not fit:
+        raise Refused("Select a calibrated preset built from these measurements first.")
     # The check must use the same microphone and speaker as the calibration;
     # another one would measure the difference between two microphones.
     session = measurements()
@@ -592,6 +611,8 @@ def cmd_check(args):
                        "raw": display(r["mean"]), "checked": display(a["mean"])})
     check = {"channels": report, "warnings": raw_result["warnings"] + result["warnings"],
              "time": datetime.datetime.now().isoformat(timespec="seconds")}
+    check["preset"] = fit["preset"]
+    save_json(os.path.join(SESSION, "checks", fit["preset"] + ".json"), check)
     save_json(os.path.join(SESSION, "check.json"), check)
     emit("result", **check)
 
@@ -604,7 +625,8 @@ def cmd_summary(_args):
            "positions": [m["position"] for m in session],
            "fit": load_json(os.path.join(SESSION, "fit.json")),
            "check": load_json(os.path.join(SESSION, "check.json")),
-           "preset": PRESET_ID if os.path.exists(PRESET) else ""}
+           "fits": _by_preset("fits"),
+           "checks": _by_preset("checks")}
     if session:
         combined = dsp.combine(session)
         out["grid"] = [round(float(f), 1) for f in dsp.GRID[::4]]
@@ -612,8 +634,23 @@ def cmd_summary(_args):
     print(json.dumps(out, default=float))
 
 
+def _by_preset(folder):
+    """Saved fits or checks keyed by preset id, for presets that still exist."""
+    out = {}
+    path = os.path.join(SESSION, folder)
+    for name in sorted(os.listdir(path)) if os.path.isdir(path) else []:
+        pid = name[:-5]
+        if name.endswith(".json") and os.path.exists(os.path.join(PRESETS, pid + ".yml")):
+            out[pid] = load_json(os.path.join(path, name))
+    return out
+
+
 def cmd_reset(_args, quiet=False):
+    # The presets stay: they are finished calibrations. What goes is what ties
+    # them to these measurements, since new ones start a new session.
     shutil.rmtree(os.path.join(SESSION, "measurements"), ignore_errors=True)
+    shutil.rmtree(os.path.join(SESSION, "fits"), ignore_errors=True)
+    shutil.rmtree(os.path.join(SESSION, "checks"), ignore_errors=True)
     for name in ("fit.json", "check.json"):
         try:
             os.remove(os.path.join(SESSION, name))

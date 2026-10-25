@@ -28,6 +28,7 @@ Panel {
   // Calibration state.
   property var devices: null
   property var session: null
+  property bool session0Loaded: false
   property string mic: ""
   property string position: "nearfield"
   property string target: "flat"
@@ -62,8 +63,11 @@ Panel {
   readonly property string dspState: Model.state(status, routedLive)
   readonly property bool hideWhenOff: setting("hideWhenOff", false) === true
   readonly property var presets: (status && status.presets) || []
-  readonly property var fit: session ? session.fit : null
-  readonly property var check: session ? session.check : null
+  // Every Sound and Correction combination builds its own preset; these are
+  // the fit and check of the one the current choices name.
+  readonly property string choiceId: Model.calibrationId(target, mode)
+  readonly property var fit: session && session.fits ? (session.fits[choiceId] || null) : null
+  readonly property var check: session && session.checks ? (session.checks[choiceId] || null) : null
   readonly property int measurementCount: session ? (session.measurements || 0) : 0
   readonly property var micOptions: Model.usableMics(devices)
   readonly property var micInfo: Model.micInfo(devices, mic)
@@ -104,7 +108,15 @@ Panel {
   }
 
   function applyPreset(id) {
-    if (id) run(["preset", id])
+    if (!id) return
+    // Picking a calibration also picks its settings, so the graph and the
+    // summary describe the calibration that is playing.
+    var built = session && session.fits ? session.fits[id] : null
+    if (built) {
+      target = built.target
+      mode = built.mode
+    }
+    run(["preset", id])
   }
 
   function stepPreset(delta) {
@@ -287,10 +299,13 @@ Panel {
         var next = Model.parse(text)
         if (!next) return
         root.session = next
-        if (next.fit) {
+        // Start from the calibration built last, but only when the panel first
+        // learns of it: later refreshes must not undo a choice being made.
+        if (next.fit && !root.session0Loaded) {
           root.target = next.fit.target || root.target
           root.mode = next.fit.mode || root.mode
         }
+        root.session0Loaded = true
         if (next.positions && next.positions.length > 0) root.position = next.positions[next.positions.length - 1]
       }
     }
@@ -571,7 +586,7 @@ Panel {
               // Omarchy releases, so the text is elided here.
               text: presetName.elidedText
               tooltipText: presetName.elidedText !== modelData.title ? modelData.title : ""
-              iconText: modelData.id === Model.CALIBRATED ? "\uf130" : ""
+              iconText: Model.isCalibrated(modelData.id) ? "\uf130" : ""
               foreground: root.bar.foreground
               fontFamily: root.bar.fontFamily
               fontSize: Style.font.bodySmall
@@ -776,7 +791,8 @@ Panel {
               fontFamily: root.bar.fontFamily
               fontSize: Style.font.bodySmall
               bordered: true
-              enabled: !root.busy && !!root.fit && root.dspState === "on" && root.status.preset === Model.CALIBRATED
+              // Checks the calibration the current choices name, so it must be the one playing.
+              enabled: !root.busy && root.fitMatches && root.dspState === "on" && root.status.preset === root.fit.preset
               opacity: enabled ? 1 : 0.4
               onClicked: root.startCalibration("check")
             }
