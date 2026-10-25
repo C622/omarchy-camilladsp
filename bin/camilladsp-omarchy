@@ -112,9 +112,10 @@ install_camilladsp() {
   # The pipewire crate generates its bindings with bindgen, which needs libclang.
   omarchy-pkg-add clang pkgconf pipewire || return 1
 
+  # The crate is named CamillaDSP; the binary it builds is camilladsp.
   cargo install --locked --root "$HOME/.local" \
     --git "$camilladsp_repo" --tag "$camilladsp_version" \
-    --features pipewire-backend camilladsp || return 1
+    --features pipewire-backend --bin camilladsp CamillaDSP || return 1
 
   has_pipewire_backend "$HOME/.local/bin/camilladsp" ||
     fail "the build finished but has no PipeWire backend"
