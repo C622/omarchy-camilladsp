@@ -51,7 +51,11 @@ const tests = {
   },
   "calibration file options and hints"() {
     const devices = { calibration_files: [{ path: "/c/7103946_90deg.txt", label: "Serial 7103946 (90°)" }] }
-    assert.deepStrictEqual(M.calibrationOptions(devices).map(o => o.value), ["", "/c/7103946_90deg.txt"])
+    const devices2 = { calibration_files: [{ path: "/c/7103946_90deg.txt", file: "7103946_90deg.txt", label: "Serial 7103946 (90°)" }] }
+    // Keyed by file name, so the copy in the plugin's folder still matches a pick from Downloads.
+    assert.deepStrictEqual(M.calibrationOptions(devices2).map(o => o.value), ["", "7103946_90deg.txt"])
+    assert.strictEqual(M.calibrationPath(devices2, "7103946_90deg.txt"), "/c/7103946_90deg.txt")
+    assert.strictEqual(M.calibrationPath(devices2, ""), "")
     const umik = { name: "alsa_input.usb-miniDSP_Umik-1_Gain__18dB_00002-00.analog-stereo", description: "Umik-1" }
     assert.match(M.calibrationHint(umik, [{ value: "" }]), /Download the calibration file/)
     assert.strictEqual(M.calibrationHint(umik, M.calibrationOptions(devices)), "")

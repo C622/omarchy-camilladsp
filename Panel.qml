@@ -54,7 +54,7 @@ Panel {
   readonly property var micOptions: Model.usableMics(devices)
   readonly property var micInfo: Model.micInfo(devices, mic)
   readonly property var calibrationOptions: Model.calibrationOptions(devices)
-  readonly property string micCalibration: micInfo && micInfo.calibration ? micInfo.calibration.path : ""
+  readonly property string micCalibration: micInfo && micInfo.calibration ? micInfo.calibration.file : ""
   readonly property string output: devices ? (devices.output || "") : ""
   readonly property bool busy: actionProc.running || calibrating
 
@@ -124,8 +124,9 @@ Panel {
     startCalibration("measure", ["--output", output, "--mic", mic, "--position", position])
   }
 
-  function setMicCalibration(path) {
-    if (!mic || path === micCalibration) return
+  function setMicCalibration(file) {
+    if (!mic || file === micCalibration) return
+    var path = Model.calibrationPath(devices, file)
     run(path ? ["calibrate", "mic-cal", "--mic", mic, "--file", path] : ["calibrate", "mic-cal", "--mic", mic, "--clear"])
   }
 

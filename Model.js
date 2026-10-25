@@ -110,12 +110,22 @@ function micInfo(devices, name) {
 }
 
 // "None" first, then every calibration file found in Downloads or the
-// plugin's mic-calibration folder.
+// plugin's mic-calibration folder. Options are keyed by file name, not path:
+// picking a file in Downloads copies it into the plugin's folder, and the
+// dropdown keeps the value that was picked, which must still match.
 function calibrationOptions(devices) {
   var files = (devices && devices.calibration_files) || []
   var out = [{ value: "", label: "None" }]
-  for (var i = 0; i < files.length; i++) out.push({ value: files[i].path, label: files[i].label })
+  for (var i = 0; i < files.length; i++) out.push({ value: files[i].file, label: files[i].label })
   return out
+}
+
+function calibrationPath(devices, file) {
+  var files = (devices && devices.calibration_files) || []
+  for (var i = 0; i < files.length; i++) {
+    if (files[i].file === file) return files[i].path
+  }
+  return ""
 }
 
 function isMeasurementMic(mic) {
@@ -219,7 +229,7 @@ if (typeof module !== "undefined") {
   module.exports = {
     parse: parse, rateLabel: rateLabel, loadLabel: loadLabel, state: state, presetTitle: presetTitle,
     heroStatus: heroStatus, outputLabel: outputLabel, bypassReason: bypassReason, clipped: clipped,
-    tooltip: tooltip, usableMics: usableMics, micInfo: micInfo, calibrationOptions: calibrationOptions,
+    tooltip: tooltip, usableMics: usableMics, micInfo: micInfo, calibrationOptions: calibrationOptions, calibrationPath: calibrationPath,
     isMeasurementMic: isMeasurementMic, calibrationHint: calibrationHint, event: event, fitSummary: fitSummary,
     checkSummary: checkSummary, curvePoints: curvePoints, frequencyX: frequencyX, meanCurve: meanCurve
   }
