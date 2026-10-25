@@ -34,8 +34,11 @@ capture_node=camilladsp-capture
 playback_node=camilladsp-playback
 ipc_target=community.camilladsp
 
-# Overridable in ~/.config/camilladsp/omarchy.conf.
-port=1234
+# Overridable in ~/.config/camilladsp/omarchy.conf. Leave port unset there
+# to let the plugin pick one: CamillaDSP's usual 1234 is also LM Studio's.
+port=""
+default_port=15342
+port_file="$state_dir/port"
 samplerate=48000
 chunksize=1024
 camilladsp_version=v4.1.3
@@ -43,6 +46,9 @@ camilladsp_repo=https://github.com/HEnquist/camilladsp
 
 # shellcheck disable=SC1090
 [[ -r $settings_file ]] && source "$settings_file"
+configured_port="$port"
+[[ -n $port ]] || port="$(cat "$port_file" 2>/dev/null)"
+[[ $port =~ ^[0-9]+$ ]] || port="$default_port"
 
 usage() {
   cat <<USAGE
@@ -374,7 +380,9 @@ python() {
 }
 
 dsp_query() {
-  python "$plugin_dir/lib/camilla-ws" "$port" "$@"
+  local listening
+  listening="$(unit_port)"
+  python "$plugin_dir/lib/camilla-ws" "${listening:-$port}" "$@"
 }
 
 # ---------- Calibrated sound switches ----------
@@ -415,6 +423,69 @@ sync_loudness_tracker() {
   fi
 }
 
+# ---------- Control port ----------
+
+# Who listens on a local TCP port: empty when nobody does, "camilladsp" when
+# CamillaDSP answers there, otherwise the program's name as ss reports it, or
+# "another program" when that is not known.
+port_owner() {
+  local line
+  (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null || return 0
+  if python "$plugin_dir/lib/camilla-ws" "$1" '"GetVersion"' >/dev/null 2>&1; then
+    printf 'camilladsp\n'
+    return 0
+  fi
+  line="$(ss -Hltnp "sport = :$1" 2>/dev/null | head -n1)"
+  if [[ $line =~ users:\(\(\"([^\"]+)\" ]]; then
+    printf '%s\n' "${BASH_REMATCH[1]}"
+  else
+    printf 'another program\n'
+  fi
+}
+
+# The port the installed CamillaDSP service was started with, which is what
+# a running CamillaDSP listens on until it restarts.
+unit_port() {
+  local found
+  found="$(grep -o -- '--port [0-9]*' "$unit_dir/$service" 2>/dev/null | head -n1)"
+  printf '%s\n' "${found#--port }"
+}
+
+install_dsp_unit() {
+  local bin
+  bin="$(camilladsp_bin)" || return 1
+  sed -e "s|@CAMILLADSP@|$bin|" -e "s|@PORT@|$port|" -e "s|@STATE_DIR@|$state_dir|g" \
+    "$plugin_dir/templates/$service" >"$unit_dir/$service"
+}
+
+# CamillaDSP keeps playing when its control port is taken, but nothing can
+# reach it: no status, no loudness. Move to a free port when another program
+# holds this one (not when it is set by hand in omarchy.conf), and restart
+# CamillaDSP on it if it is running.
+ensure_port() {
+  local owner candidate
+  [[ -n $configured_port ]] && return 0
+  owner="$(port_owner "$port")"
+  if [[ -n $owner && $owner != camilladsp* ]]; then
+    candidate="$default_port"
+    while [[ -n $(port_owner "$candidate") ]] || [[ $candidate == "$port" ]]; do
+      (( candidate++ ))
+      (( candidate < default_port + 200 )) || fail "no free port for CamillaDSP's control connection"
+    done
+    echo "Port $port is used by $owner; CamillaDSP moves to $candidate."
+    port="$candidate"
+  fi
+  mkdir -p "$state_dir"
+  [[ $(cat "$port_file" 2>/dev/null) == "$port" ]] && grep -q -- "--port $port " "$unit_dir/$service" 2>/dev/null && return 0
+  printf '%s\n' "$port" >"$port_file"
+  install_dsp_unit || return 0
+  [[ -f $unit_dir/$loudness_service ]] && install_loudness_unit
+  systemctl --user daemon-reload
+  if [[ $(service_state) == "active" ]]; then
+    systemctl --user restart "$service"
+  fi
+}
+
 # ---------- Commands ----------
 
 cmd_setup() {
@@ -440,9 +511,9 @@ cmd_setup() {
 
   rm -f "$stale_sink_config"
   cp "$plugin_dir/templates/$sink_service" "$unit_dir/$sink_service"
-  sed -e "s|@CAMILLADSP@|$bin|" -e "s|@PORT@|$port|" -e "s|@STATE_DIR@|$state_dir|g" \
-    "$plugin_dir/templates/$service" >"$unit_dir/$service"
+  install_dsp_unit
   systemctl --user daemon-reload
+  ensure_port
 
   # WirePlumber reads its rules at startup. Restarting it only re-runs the routing
   # policy; streams keep playing.
@@ -466,6 +537,7 @@ cmd_on() {
   local target preset was_active
 
   require_setup
+  ensure_port
   target="$(choose_target)" || fail "no audio output found"
   preset="$(current_preset)"
   [[ -n $preset ]] || fail "no presets in $presets_dir"
@@ -531,6 +603,7 @@ cmd_preset() {
   target="$(cat "$target_file" 2>/dev/null)"
   [[ -n $target ]] || target="$(choose_target)" || fail "no audio output found"
 
+  is_setup && ensure_port
   render_config "$preset" "$target"
   printf '%s\n' "$preset" >"$preset_file"
 
@@ -593,6 +666,8 @@ status_json() {
     --argjson presets "${presets:-[]}" \
     --argjson dsp "$dsp" \
     --arg presetsDir "$presets_dir" \
+    --arg port "$(unit_port)" \
+    --arg portOwner "$( [[ $state == "active" && $dsp == "null" ]] && port_owner "$(unit_port)")" \
     '{
       installed: $installed,
       pipewire: $pipewire,
@@ -605,6 +680,8 @@ status_json() {
       preset: $preset,
       presets: $presets,
       presetsDir: $presetsDir,
+      port: $port,
+      portConflict: (if $portOwner != "" and ($portOwner | startswith("camilladsp") | not) then $portOwner else "" end),
       dsp: $dsp
     }'
 }

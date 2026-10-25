@@ -577,6 +577,15 @@ Panel {
         }
 
         Message {
+          visible: !!root.status && !!root.status.portConflict
+          text: root.status && root.status.portConflict
+            ? "CamillaDSP cannot be controlled: its port " + root.status.port + " is taken by " + root.status.portConflict
+              + ". Loudness and the live readings need it. Turn CamillaDSP off and on to move to a free port."
+            : ""
+          urgent: true
+        }
+
+        Message {
           visible: root.actionError !== ""
           text: root.actionError
           urgent: true

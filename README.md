@@ -108,7 +108,7 @@ camilladsp-omarchy calibrate devices | measure | fit | apply | check | summary |
 | Path | What |
 |---|---|
 | `~/.config/camilladsp/presets/` | Presets, yours to edit |
-| `~/.config/camilladsp/omarchy.conf` | Optional overrides: `port`, `samplerate`, `chunksize`, `camilladsp_version` |
+| `~/.config/camilladsp/omarchy.conf` | Optional overrides: `port`, `samplerate`, `chunksize`, `camilladsp_version`. Leave `port` unset and the plugin picks a free one, starting at 15342; CamillaDSP's usual 1234 is also LM Studio's. |
 | `~/.config/camilladsp/mic-calibration/` | Microphone calibration files and which microphone uses which |
 | `~/.config/camilladsp/filters/` | FIR filters written by the calibrator |
 | `~/.local/state/omarchy-camilladsp/` | Generated config, selected preset and output, measurements |
