@@ -561,11 +561,16 @@ Panel {
             model: root.presets
 
             Button {
+              id: presetButton
               required property var modelData
               required property int index
               width: parent.width
               leftAlign: true
-              text: modelData.title
+              // Long names (a calibration is named after the output) end in "…"
+              // instead of running past the panel: Button only elides on newer
+              // Omarchy releases, so the text is elided here.
+              text: presetName.elidedText
+              tooltipText: presetName.elidedText !== modelData.title ? modelData.title : ""
               iconText: modelData.id === Model.CALIBRATED ? "\uf130" : ""
               foreground: root.bar.foreground
               fontFamily: root.bar.fontFamily
@@ -579,6 +584,16 @@ Panel {
                   root.cursorActive = true
                   root.presetIndex = index
                 }
+              }
+
+              TextMetrics {
+                id: presetName
+                text: presetButton.modelData.title
+                font.family: presetButton.fontFamily
+                font.pixelSize: presetButton.fontSize
+                elide: Text.ElideRight
+                elideWidth: Math.max(0, presetButton.width - presetButton.horizontalPadding * 2
+                  - (presetButton.iconText !== "" ? presetButton.iconSize + Style.space(10) : 0) - Style.space(6))
               }
             }
           }
