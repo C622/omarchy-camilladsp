@@ -808,7 +808,11 @@ Panel {
   component ResponseGraph: Canvas {
     id: graph
     readonly property var grid: root.session ? root.session.grid : null
-    readonly property var measured: root.session ? Model.meanCurve(root.session.curves) : []
+    // After a check, both curves come from the spot it measured at; before
+    // one, the faint curve is the average of every position.
+    readonly property var measured: root.check && root.check.channels[0].raw
+      ? Model.meanCurve(root.check.channels.map(function(c) { return c.raw }))
+      : (root.session ? Model.meanCurve(root.session.curves) : [])
     readonly property var targetCurve: root.fit ? root.fit.target_curve : []
     readonly property var planned: root.check
       ? Model.meanCurve(root.check.channels.map(function(c) { return c.checked }))
@@ -859,7 +863,7 @@ Panel {
     Text {
       anchors.left: parent.left
       anchors.bottom: parent.bottom
-      text: root.check ? "faint: before · solid: checked · dashed: target"
+      text: root.check ? "faint: without · solid: with correction · dashed: target"
         : (root.fit ? "faint: measured · solid: planned · dashed: target" : "measured")
       textFormat: Text.PlainText
       color: root.bar.foreground

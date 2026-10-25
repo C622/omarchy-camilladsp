@@ -54,7 +54,14 @@ def emit(event, **fields):
     print(json.dumps({"event": event, **fields}, default=float), flush=True)
 
 
+# The share of the progress bar the running measurement fills, so a command
+# that measures twice fills it once.
+PROGRESS_SPAN = (0.0, 1.0)
+
+
 def progress(stage, message, fraction):
+    start, width = PROGRESS_SPAN
+    fraction = start + width * fraction
     emit("progress", stage=stage, message=message, fraction=round(fraction, 3))
 
 
@@ -535,30 +542,49 @@ def cmd_check(args):
     session = measurements()
     position = session[-1]["position"] if session else "nearfield"
     calibration = session[0].get("mic_calibration", "") if session else ""
+
+    # Measure twice at the same spot, straight to the output and then through
+    # CamillaDSP. The plan is the average of every position measured, and one
+    # spot in a room differs from that average by several dB, so comparing the
+    # corrected sound against the plan would mostly measure where the
+    # microphone stands. The difference between the two passes is what the
+    # correction actually does, here, and that is what must match the plan.
+    global PROGRESS_SPAN
+    PROGRESS_SPAN = (0.0, 0.5)
+    raw_result = measure(fit["output"], fit["mic"], position, "check", through_dsp=False, mic_calibration=calibration)
+    PROGRESS_SPAN = (0.5, 0.5)
     result = measure(fit["output"], fit["mic"], position, "check", through_dsp=True, mic_calibration=calibration)
+    PROGRESS_SPAN = (0.0, 1.0)
+    raw = dsp.combine([raw_result])
     after = dsp.combine([result])
-    before = dsp.combine(session)
     try:
         target = dsp.target_curve(fit["target"])
     except OSError:
         raise Refused(f"The target curve {fit['target']} is gone; build the calibration again.")
     report = []
-    for ch, (b, a, planned) in enumerate(zip(before, after, fit["channels"])):
+    for ch, (r, a, planned) in enumerate(zip(raw, after, fit["channels"])):
         hp = dsp.peq_db([f for f in planned["filters"] if f["type"] == "Highpass"])
         goal = target + hp
-        w = dsp._weights((dsp.GRID >= planned["fmin"]) & (dsp.GRID <= planned["fmax"]), a["snr"], a["spread"])
+        band = (dsp.GRID >= planned["fmin"]) & (dsp.GRID <= planned["fmax"])
+        w = dsp._weights(band, np.minimum(r["snr"], a["snr"]), np.maximum(r["spread"], a["spread"]))
+
+        def level_matched(curve):
+            return curve - np.sum(w * curve) / max(np.sum(w), 1e-9)
 
         def err(curve):
             c = curve + np.sum(w * (goal - curve)) / max(np.sum(w), 1e-9)
             return dsp._cost(c - goal, w)
 
-        predicted = np.interp(np.log(dsp.GRID), np.log(fit["grid"]), planned["predicted"])
-        off = a["mean"] - predicted
-        off -= np.sum(w * off) / max(np.sum(w), 1e-9)
-        report.append({"error_before": err(b["mean"] + hp), "error_after": err(a["mean"]),
+        def on_grid(values):
+            return np.interp(np.log(dsp.GRID), np.log(fit["grid"]), values)
+
+        planned_correction = on_grid(planned["predicted"]) - on_grid(planned["measured"])
+        achieved = dsp.smooth(a["mean"], 6) - dsp.smooth(r["mean"], 6)
+        off = level_matched(achieved) - level_matched(planned_correction)
+        report.append({"error_before": err(r["mean"]), "error_after": err(a["mean"]),
                        "plan_deviation": float(np.sqrt(np.sum(w * off ** 2) / max(np.sum(w), 1e-9))),
-                       "checked": display(a["mean"])})
-    check = {"channels": report, "warnings": result["warnings"],
+                       "raw": display(r["mean"]), "checked": display(a["mean"])})
+    check = {"channels": report, "warnings": raw_result["warnings"] + result["warnings"],
              "time": datetime.datetime.now().isoformat(timespec="seconds")}
     save_json(os.path.join(SESSION, "check.json"), check)
     emit("result", **check)

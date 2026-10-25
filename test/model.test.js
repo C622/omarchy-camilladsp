@@ -73,7 +73,8 @@ const tests = {
       { error_before: 3, error_after: 1, filters: [1, 2, 3] }, { error_before: 2, error_after: 1.2, filters: [1, 2] }] }
     assert.strictEqual(M.fitSummary(fit), "Off target by 2.5 dB before, 1.1 dB planned (5 filters)")
     assert.strictEqual(M.fitSummary({ ...fit, mode: "fir" }), "Off target by 2.5 dB before, 1.1 dB planned (FIR)")
-    assert.match(M.checkSummary({ channels: [{ error_after: 1, plan_deviation: 0.3 }] }), /matches the plan/)
+    assert.strictEqual(M.checkSummary({ channels: [{ error_before: 4, error_after: 1, plan_deviation: 0.3 }] }),
+      "Checked here: 4.0 dB off target without, 1.0 dB with; the correction matches the plan")
     assert.match(M.checkSummary({ channels: [{ error_after: 1, plan_deviation: 3 }] }), /measure again/)
   },
   "curve points span the box and clamp"() {

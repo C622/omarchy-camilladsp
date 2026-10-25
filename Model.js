@@ -175,15 +175,20 @@ function fitSummary(fit) {
 
 function checkSummary(check) {
   if (!check || !check.channels || check.channels.length === 0) return ""
-  var after = 0, deviation = 0
+  var before = 0, after = 0, deviation = 0
   for (var i = 0; i < check.channels.length; i++) {
+    before += Number(check.channels[i].error_before) || 0
     after += Number(check.channels[i].error_after) || 0
     deviation += Number(check.channels[i].plan_deviation) || 0
   }
+  before /= check.channels.length
   after /= check.channels.length
   deviation /= check.channels.length
-  var verdict = deviation < 1 ? "matches the plan" : (deviation < 2 ? "close to the plan" : "off the plan, measure again")
-  return "Checked: " + db(after) + " off target, " + verdict
+  // The deviation compares what the correction did at the checked spot with
+  // what was planned, so it does not depend on where the microphone stands.
+  var verdict = deviation < 1 ? "the correction matches the plan"
+    : (deviation < 2 ? "the correction is close to the plan" : "the correction is off the plan, measure again")
+  return "Checked here: " + db(before) + " off target without, " + db(after) + " with; " + verdict
 }
 
 // ---------- Response graph ----------
