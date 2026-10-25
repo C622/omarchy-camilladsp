@@ -218,6 +218,28 @@ function frequencyX(grid, hz, width) {
   return (Math.log(hz) - lo) / (Math.log(grid[grid.length - 1]) - lo) * width
 }
 
+// The calibrator's target curves, the same as target_curve() in
+// lib/calibration_dsp.py, so the panel can draw a choice the moment it is made.
+function targetDb(name, hz) {
+  var octaves = Math.log(hz / 1000) / Math.LN2
+  if (name === "warm") return Math.max(-4, Math.min(3, -0.8 * octaves))
+  if (name === "room") return 4 / (1 + Math.pow(hz / 100, 2)) + (octaves > 0 ? -0.6 * octaves : 0)
+  return 0
+}
+
+function targetCurve(name, grid) {
+  var out = []
+  for (var i = 0; i < (grid || []).length; i++) out.push(targetDb(name, grid[i]))
+  return out
+}
+
+// Log-spaced frequencies from 20 Hz to 20 kHz.
+function logGrid(count) {
+  var out = []
+  for (var i = 0; i < count; i++) out.push(20 * Math.pow(1000, i / (count - 1)))
+  return out
+}
+
 // Average the channels into one curve for the graph.
 function meanCurve(curves) {
   if (!curves || curves.length === 0) return []
@@ -236,6 +258,6 @@ if (typeof module !== "undefined") {
     heroStatus: heroStatus, outputLabel: outputLabel, bypassReason: bypassReason, clipped: clipped,
     tooltip: tooltip, usableMics: usableMics, micInfo: micInfo, calibrationOptions: calibrationOptions, calibrationPath: calibrationPath,
     isMeasurementMic: isMeasurementMic, calibrationHint: calibrationHint, event: event, fitSummary: fitSummary,
-    checkSummary: checkSummary, curvePoints: curvePoints, frequencyX: frequencyX, meanCurve: meanCurve
+    checkSummary: checkSummary, curvePoints: curvePoints, targetDb: targetDb, targetCurve: targetCurve, logGrid: logGrid, frequencyX: frequencyX, meanCurve: meanCurve
   }
 }

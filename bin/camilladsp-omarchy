@@ -56,7 +56,7 @@ Usage: camilladsp-omarchy <command>
   reset-clipping         Zero CamillaDSP's clipped-samples counter
   calibrate <command>    Measure with a microphone and build a preset:
                            devices | measure --output O --mic M [--position nearfield|listening]
-                           fit [--target flat|warm|room|FILE] [--mode peq|fir] | apply | check
+                           fit [--target flat|warm|room|FILE] [--mode peq|fir] [--preview] | apply | check
                            summary | reset
   uninstall              Turn off and remove the services and sink (presets are kept)
 USAGE

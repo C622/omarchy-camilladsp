@@ -77,6 +77,20 @@ const tests = {
       "Checked here: 4.0 dB off target without, 1.0 dB with; the correction matches the plan")
     assert.match(M.checkSummary({ channels: [{ error_after: 1, plan_deviation: 3 }] }), /measure again/)
   },
+  "target curves match the calibrator's"() {
+    // Reference values from target_curve() in lib/calibration_dsp.py.
+    const hz = [20, 50, 100, 300, 1000, 3000, 10000, 20000]
+    const expected = {
+      flat: [0, 0, 0, 0, 0, 0, 0, 0],
+      warm: [3.0, 3.0, 2.658, 1.39, 0.0, -1.268, -2.658, -3.458],
+      room: [3.846, 3.2, 2.0, 0.4, 0.037, -0.947, -1.993, -2.593],
+    }
+    for (const [name, values] of Object.entries(expected))
+      hz.forEach((f, i) => assert.ok(Math.abs(M.targetDb(name, f) - values[i]) < 0.01, `${name} at ${f} Hz`))
+    const grid = M.logGrid(4)
+    assert.ok(Math.abs(grid[0] - 20) < 1e-9 && Math.abs(grid[3] - 20000) < 1e-6)
+    assert.strictEqual(M.targetCurve("warm", grid).length, 4)
+  },
   "curve points span the box and clamp"() {
     const pts = M.curvePoints([20, 200, 2000, 20000], [0, 15, -15, 40], 300, 100, 15)
     assert.strictEqual(pts[0].x, 0)

@@ -4,7 +4,7 @@
 
   calibrate devices                       outputs and microphones, as JSON
   calibrate measure --output O --mic M [--position nearfield|listening]
-  calibrate fit [--target flat|warm|room|FILE] [--mode peq|fir] [--align auto|on|off]
+  calibrate fit [--target flat|warm|room|FILE] [--mode peq|fir] [--align auto|on|off] [--preview]
   calibrate check                         replay through CamillaDSP and compare
   calibrate mic-cal --mic M (--file F | --clear)
                                           use a calibration file for a microphone
@@ -467,9 +467,10 @@ def cmd_fit(args):
         if args.mode == "fir":
             taps, knee, corr = dsp.fir_correction(c, target)
             filters = [{"type": "Highpass", "freq": round(knee, 1), "q": 0.707}] if knee > 30 else []
-            os.makedirs(FILTERS, exist_ok=True)
             path = os.path.join(FILTERS, f"calibrated-ch{ch}.wav")
-            wavfile.write(path, dsp.FS, taps)
+            if not args.preview:
+                os.makedirs(FILTERS, exist_ok=True)
+                wavfile.write(path, dsp.FS, taps)
             fir_files = (fir_files or []) + [path]
             correction = corr
             info = {"knee": knee, "fmin": dsp.fit_floor(c["mean"], target, knee), "fmax": 18000.0}
@@ -495,17 +496,22 @@ def cmd_fit(args):
     detail = (f"{len(session)} position{'s' if len(session) != 1 else ''}, {args.target} target, "
               f"{'FIR' if args.mode == 'fir' else 'parametric EQ'}"
               f"{', aligned' if align else ''}, measured {session[-1]['time'][:10]}")
-    text = dsp.preset_yaml(title, detail, per_channel, preamp, fir_files)
-    os.makedirs(os.path.dirname(PRESET), exist_ok=True)
-    with open(PRESET + ".tmp", "w") as f:
-        f.write(text)
-    os.replace(PRESET + ".tmp", PRESET)
-
     fit = {"preset": PRESET_ID, "title": title, "description": detail, "target": args.target, "mode": args.mode,
            "aligned": align, "preamp_db": preamp, "output": session[0]["output"], "mic": session[0]["mic"],
            "positions": len(session), "grid": [round(float(f), 1) for f in dsp.GRID[::4]],
            "target_curve": display(target), "channels": report,
            "time": datetime.datetime.now().isoformat(timespec="seconds")}
+    # A preview shows what these settings would do and touches nothing: no
+    # preset, no FIR files, and the built calibration and its check stay.
+    if args.preview:
+        emit("result", preview=True, **fit)
+        return
+
+    text = dsp.preset_yaml(title, detail, per_channel, preamp, fir_files)
+    os.makedirs(os.path.dirname(PRESET), exist_ok=True)
+    with open(PRESET + ".tmp", "w") as f:
+        f.write(text)
+    os.replace(PRESET + ".tmp", PRESET)
     save_json(os.path.join(SESSION, "fit.json"), fit)
     try:
         os.remove(os.path.join(SESSION, "check.json"))
@@ -629,6 +635,7 @@ def main():
     f.add_argument("--target", default="flat")
     f.add_argument("--mode", choices=["peq", "fir"], default="peq")
     f.add_argument("--align", choices=["auto", "on", "off"], default="auto")
+    f.add_argument("--preview", action="store_true", help="show what the fit would be without saving anything")
     sub.add_parser("check")
     c = sub.add_parser("mic-cal")
     c.add_argument("--mic", required=True)

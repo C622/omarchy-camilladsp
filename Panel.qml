@@ -41,6 +41,20 @@ Panel {
   readonly property string calCrashMessage: "The calibrator stopped unexpectedly"
   property var calWarnings: []
 
+  // What the current Sound and Correction choices would do with the
+  // measurements, worked out without saving anything (calibrate fit --preview).
+  property var preview: null
+  property string previewKey: ""
+  property string previewRunningKey: ""
+  property string previewFailedKey: ""
+  property bool previewCancelled: false
+  readonly property string selectionKey: target + "/" + mode + "/" + measurementCount
+  // The built calibration already is the current choice: show it and its check.
+  readonly property bool fitMatches: !!fit && fit.target === target && fit.mode === mode
+    && fit.positions === measurementCount
+  readonly property bool previewReady: !fitMatches && !!preview && previewKey === selectionKey
+  readonly property bool previewing: !fitMatches && measurementCount > 0 && !previewReady
+
   // PipeWire tells the shell when the default output changes, so the icon
   // follows an output switched elsewhere without polling.
   readonly property var defaultSink: Pipewire.defaultAudioSink
@@ -132,6 +146,22 @@ Panel {
 
   function build() {
     startCalibration("fit", ["--target", target, "--mode", mode])
+  }
+
+  function runPreview() {
+    if (fitMatches || measurementCount === 0 || calibrating) return
+    if (previewKey === selectionKey && preview) return
+    // A choice that failed once fails again; it waits for a new measurement or choice.
+    if (previewFailedKey === selectionKey) return
+    // A newer choice replaces one still being worked out; onExited starts it.
+    if (previewProc.running) {
+      previewCancelled = true
+      previewProc.running = false
+      return
+    }
+    previewRunningKey = selectionKey
+    previewProc.command = [ctl, "calibrate", "fit", "--target", target, "--mode", mode, "--preview"]
+    previewProc.running = true
   }
 
   function handleEvent(line) {
@@ -282,6 +312,34 @@ Panel {
     }
     onExited: function(exitCode) { root.calibrationFinished(exitCode) }
   }
+
+  Process {
+    id: previewProc
+    stdout: SplitParser {
+      onRead: function(line) {
+        var e = Model.event(line)
+        if (e && e.event === "result" && e.preview) {
+          root.preview = e
+          root.previewKey = root.previewRunningKey
+        }
+      }
+    }
+    onExited: function(exitCode) {
+      if (exitCode !== 0 && !root.previewCancelled) root.previewFailedKey = root.previewRunningKey
+      root.previewCancelled = false
+      previewTimer.restart()
+    }
+  }
+
+  // Wait for the clicking to settle before fitting: a PEQ fit takes seconds.
+  Timer {
+    id: previewTimer
+    interval: 400
+    onTriggered: root.runPreview()
+  }
+
+  onSelectionKeyChanged: previewTimer.restart()
+  onFitMatchesChanged: previewTimer.restart()
 
   // Load and clipping only change while audio plays, and only matter while
   // someone is looking: read them while the panel is open.
@@ -586,6 +644,11 @@ Panel {
             onPicked: function(v) { root.target = v }
           }
 
+          TargetStrip {
+            width: parent.width
+            height: Style.space(44)
+          }
+
           Choice {
             label: "Correction"
             options: [
@@ -647,8 +710,12 @@ Panel {
           }
 
           Message {
-            visible: !root.calibrating && Model.fitSummary(root.fit) !== ""
-            text: Model.fitSummary(root.fit) + (Model.checkSummary(root.check) ? "\n" + Model.checkSummary(root.check) : "")
+            visible: !root.calibrating && text !== ""
+            text: root.fitMatches
+              ? Model.fitSummary(root.fit) + (Model.checkSummary(root.check) ? "\n" + Model.checkSummary(root.check) : "")
+              : root.previewReady
+                ? "With these settings: " + Model.fitSummary(root.preview).replace(/^Off target by/, "off target by") + ". Build to use them."
+                : (root.previewing && root.previewFailedKey !== root.selectionKey ? "Working out what these settings would do…" : "")
           }
 
           Row {
@@ -810,13 +877,18 @@ Panel {
     readonly property var grid: root.session ? root.session.grid : null
     // After a check, both curves come from the spot it measured at; before
     // one, the faint curve is the average of every position.
-    readonly property var measured: root.check && root.check.channels[0].raw
+    readonly property var measured: root.fitMatches && root.check && root.check.channels[0].raw
       ? Model.meanCurve(root.check.channels.map(function(c) { return c.raw }))
       : (root.session ? Model.meanCurve(root.session.curves) : [])
-    readonly property var targetCurve: root.fit ? root.fit.target_curve : []
-    readonly property var planned: root.check
+    // The target follows the Sound choice at once; the solid curve is the built
+    // calibration (or its check) when it matches the choices, otherwise the
+    // preview of what they would do.
+    readonly property var targetCurve: grid ? Model.targetCurve(root.target, grid) : []
+    readonly property bool showCheck: root.fitMatches && !!root.check
+    readonly property var planned: showCheck
       ? Model.meanCurve(root.check.channels.map(function(c) { return c.checked }))
-      : (root.fit ? Model.meanCurve(root.fit.channels.map(function(c) { return c.predicted })) : [])
+      : (root.fitMatches ? Model.meanCurve(root.fit.channels.map(function(c) { return c.predicted }))
+        : (root.previewReady ? Model.meanCurve(root.preview.channels.map(function(c) { return c.predicted })) : []))
     readonly property color ink: root.bar.foreground
     readonly property color accent: Commons.Color.accent
 
@@ -863,13 +935,70 @@ Panel {
     Text {
       anchors.left: parent.left
       anchors.bottom: parent.bottom
-      text: root.check ? "faint: without · solid: with correction · dashed: target"
-        : (root.fit ? "faint: measured · solid: planned · dashed: target" : "measured")
+      text: graph.showCheck ? "faint: without · solid: with correction · dashed: target"
+        : (graph.planned.length > 0 ? "faint: measured · solid: planned · dashed: target"
+          : (root.previewing ? "faint: measured · dashed: target · working out the plan…" : "faint: measured · dashed: target"))
       textFormat: Text.PlainText
       color: root.bar.foreground
       opacity: 0.5
       font.family: root.bar.fontFamily
       font.pixelSize: Style.font.caption
+    }
+  }
+
+  // Neutral, Warm and Room side by side, the chosen one in the accent colour:
+  // what each choice asks the correction to aim for, ±5 dB from 20 Hz to 20 kHz.
+  component TargetStrip: Canvas {
+    id: strip
+    readonly property var grid: Model.logGrid(96)
+    readonly property string selected: root.target
+    readonly property color ink: root.bar.foreground
+    readonly property color accent: Commons.Color.accent
+
+    onSelectedChanged: requestPaint()
+    onWidthChanged: requestPaint()
+    onInkChanged: requestPaint()
+
+    onPaint: {
+      var ctx = getContext("2d")
+      ctx.reset()
+      var plot = height - Style.space(12)
+      ctx.save()
+      ctx.globalAlpha = 0.12
+      ctx.strokeStyle = ink
+      ctx.lineWidth = 1
+      ctx.beginPath(); ctx.moveTo(0, plot / 2); ctx.lineTo(width, plot / 2); ctx.stroke()
+      ctx.restore()
+      var names = ["flat", "warm", "room"]
+      // The chosen curve last, so it is drawn on top.
+      names.sort(function(a, b) { return (a === selected) - (b === selected) })
+      for (var n = 0; n < names.length; n++) {
+        var pts = Model.curvePoints(grid, Model.targetCurve(names[n], grid), width, plot, 5)
+        ctx.save()
+        ctx.globalAlpha = names[n] === selected ? 1.0 : 0.3
+        ctx.strokeStyle = names[n] === selected ? accent : ink
+        ctx.lineWidth = names[n] === selected ? 2 : 1
+        ctx.beginPath()
+        ctx.moveTo(pts[0].x, pts[0].y)
+        for (var i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y)
+        ctx.stroke()
+        ctx.restore()
+      }
+    }
+
+    Repeater {
+      model: [{ hz: 100, label: "100" }, { hz: 1000, label: "1k" }, { hz: 10000, label: "10k" }]
+      Text {
+        required property var modelData
+        x: Model.frequencyX(strip.grid, modelData.hz, strip.width) - width / 2
+        anchors.bottom: parent.bottom
+        text: modelData.label
+        textFormat: Text.PlainText
+        color: root.bar.foreground
+        opacity: 0.45
+        font.family: root.bar.fontFamily
+        font.pixelSize: Style.font.caption
+      }
     }
   }
 }
