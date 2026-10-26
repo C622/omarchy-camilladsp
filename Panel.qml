@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Controls
 import Quickshell
 import Quickshell.Io
 import Quickshell.Services.Pipewire
@@ -33,6 +34,7 @@ Panel {
   property string position: "nearfield"
   property string target: "flat"
   property string mode: "peq"
+  readonly property bool roomCorrection: mode === "mixed" || mode === "mixed-gentle"
   property bool calibrating: false
   property string calStage: ""
   property string calMessage: ""
@@ -479,476 +481,503 @@ Panel {
       onCloseRequested: root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
 
-      Column {
-        id: column
-        anchors.left: parent.left
-        anchors.right: parent.right
-        anchors.top: parent.top
-        spacing: Style.space(14)
-
-        // ---------- Hero: icon · title/status · power ----------
-        Item {
-          width: parent.width
-          implicitHeight: Math.max(heroIcon.implicitHeight, heroLabels.implicitHeight, powerButton.implicitHeight)
-
-          Text {
-            id: heroIcon
-            textFormat: Text.PlainText
-            text: "\uf1de"
-            color: root.dspState === "on" ? root.colorOn : root.bar.foreground
-            opacity: root.dspState === "on" ? 1 : 0.45
-            font.family: root.bar.fontFamily
-            font.pixelSize: Style.font.display
-            anchors.left: parent.left
-            anchors.verticalCenter: parent.verticalCenter
-          }
-
-          Column {
-            id: heroLabels
-            anchors.left: heroIcon.right
-            anchors.leftMargin: Style.space(14)
-            anchors.right: powerButton.left
-            anchors.rightMargin: Style.space(10)
-            anchors.verticalCenter: parent.verticalCenter
-            spacing: Style.space(2)
-
-            Text {
-              text: root.dspState === "on" ? Model.presetTitle(root.status, root.status.preset) : "CamillaDSP"
-              textFormat: Text.PlainText
-              color: root.bar.foreground
-              font.family: root.bar.fontFamily
-              font.pixelSize: Style.font.title
-              font.bold: true
-              elide: Text.ElideRight
-              width: parent.width
-            }
-
-            Text {
-              text: Model.heroStatus(root.status, root.routedLive).toUpperCase()
-              textFormat: Text.PlainText
-              color: root.dspState === "on" ? root.colorOn
-                : (root.dspState === "failed" ? Commons.Color.urgent
-                  : (root.dspState === "bypassed" ? root.colorMeasured : Qt.darker(root.bar.foreground, 1.4)))
-              font.family: root.bar.fontFamily
-              font.pixelSize: Style.font.caption
-              font.bold: true
-              font.letterSpacing: 1.2
-              elide: Text.ElideRight
-              width: parent.width
-            }
-          }
-
-          Button {
-            id: powerButton
-            anchors.right: parent.right
-            anchors.verticalCenter: parent.verticalCenter
-            visible: root.dspState !== "loading"
-            text: root.dspState === "setup" ? "Set up" : (root.dspState === "on" ? "Turn off" : "Turn on")
-            foreground: root.bar.foreground
-            fontFamily: root.bar.fontFamily
-            fontSize: Style.font.bodySmall
-            bordered: true
-            active: root.dspState === "on"
-            enabled: !root.busy
-            opacity: enabled ? 1 : 0.4
-            onClicked: root.togglePower()
-          }
-        }
-
-        Message {
-          visible: root.dspState === "setup"
-          text: root.status && root.status.installed && !root.status.pipewire
-            ? "This CamillaDSP was built without the PipeWire backend. Set up builds one that has it into ~/.local/bin."
-            : "Set up installs CamillaDSP and a virtual CamillaDSP output. It opens a terminal, since installing packages may ask for your password."
-        }
-
-        Message {
-          visible: root.dspState === "bypassed" && text !== ""
-          text: Model.bypassReason(root.status)
-        }
-
-        Message {
-          visible: root.dspState === "failed"
-          text: "CamillaDSP stopped. See: journalctl --user -u omarchy-camilladsp"
-          urgent: true
-        }
-
-        Message {
-          visible: root.actionError !== ""
-          text: root.actionError
-          urgent: true
-        }
-
+      // The card is as tall as the screen allows; past that the content
+      // scrolls, the way Omarchy's own long panels do.
+      Flickable {
+        id: scroller
+        anchors.fill: parent
+        contentWidth: width
+        contentHeight: column.implicitHeight
+        clip: true
+        boundsBehavior: Flickable.StopAtBounds
+        interactive: contentHeight > height
+        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+        // Folding a section away must not leave the view past the end.
+        onContentHeightChanged: if (contentY > Math.max(0, contentHeight - height)) contentY = Math.max(0, contentHeight - height)
         Column {
-          width: parent.width
-          spacing: Style.spacing.labelGap
-          visible: root.dspState !== "setup" && root.dspState !== "loading"
+          id: column
+          width: scroller.width
+          spacing: Style.space(14)
 
-          InfoPair { label: "Output"; value: Model.outputLabel(root.status) || "—" }
-        }
-
-        // ---------- Presets ----------
-        PanelSeparator { foreground: root.bar.foreground; visible: root.presets.length > 0 }
-
-        Column {
-          width: parent.width
-          spacing: Style.space(6)
-          visible: root.presets.length > 0
-
+          // ---------- Hero: icon · title/status · power ----------
           Item {
             width: parent.width
-            implicitHeight: Math.max(presetHeader.implicitHeight, editButton.implicitHeight)
+            implicitHeight: Math.max(heroIcon.implicitHeight, heroLabels.implicitHeight, powerButton.implicitHeight)
 
-            FoldHeader {
-              id: presetHeader
+            Text {
+              id: heroIcon
+              textFormat: Text.PlainText
+              text: "\uf1de"
+              color: root.dspState === "on" ? root.colorOn : root.bar.foreground
+              opacity: root.dspState === "on" ? 1 : 0.45
+              font.family: root.bar.fontFamily
+              font.pixelSize: Style.font.display
               anchors.left: parent.left
-              anchors.right: editButton.visible ? editButton.left : parent.right
-              anchors.rightMargin: editButton.visible ? Style.space(8) : 0
               anchors.verticalCenter: parent.verticalCenter
-              text: "Presets"
-              collapsed: root.presetsCollapsed
-              summary: root.status ? Model.presetTitle(root.status, root.status.preset) : ""
-              onToggled: root.setCollapsed("presetsCollapsed", !root.presetsCollapsed)
+            }
+
+            Column {
+              id: heroLabels
+              anchors.left: heroIcon.right
+              anchors.leftMargin: Style.space(14)
+              anchors.right: powerButton.left
+              anchors.rightMargin: Style.space(10)
+              anchors.verticalCenter: parent.verticalCenter
+              spacing: Style.space(2)
+
+              Text {
+                text: root.dspState === "on" ? Model.presetTitle(root.status, root.status.preset) : "CamillaDSP"
+                textFormat: Text.PlainText
+                color: root.bar.foreground
+                font.family: root.bar.fontFamily
+                font.pixelSize: Style.font.title
+                font.bold: true
+                elide: Text.ElideRight
+                width: parent.width
+              }
+
+              Text {
+                text: Model.heroStatus(root.status, root.routedLive).toUpperCase()
+                textFormat: Text.PlainText
+                color: root.dspState === "on" ? root.colorOn
+                  : (root.dspState === "failed" ? Commons.Color.urgent
+                    : (root.dspState === "bypassed" ? root.colorMeasured : Qt.darker(root.bar.foreground, 1.4)))
+                font.family: root.bar.fontFamily
+                font.pixelSize: Style.font.caption
+                font.bold: true
+                font.letterSpacing: 1.2
+                elide: Text.ElideRight
+                width: parent.width
+              }
             }
 
             Button {
-              id: editButton
-              visible: !root.presetsCollapsed
-                anchors.right: parent.right
-                anchors.verticalCenter: parent.verticalCenter
-                text: "Edit"
-                iconText: "\uf044"
-                foreground: root.bar.foreground
-                fontFamily: root.bar.fontFamily
-                fontSize: Style.font.caption
-                onClicked: root.editPresets()
-              }
+              id: powerButton
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              visible: root.dspState !== "loading"
+              text: root.dspState === "setup" ? "Set up" : (root.dspState === "on" ? "Turn off" : "Turn on")
+              foreground: root.bar.foreground
+              fontFamily: root.bar.fontFamily
+              fontSize: Style.font.bodySmall
+              bordered: true
+              active: root.dspState === "on"
+              enabled: !root.busy
+              opacity: enabled ? 1 : 0.4
+              onClicked: root.togglePower()
+            }
+          }
+
+          Message {
+            visible: root.dspState === "setup"
+            text: root.status && root.status.installed && !root.status.pipewire
+              ? "This CamillaDSP was built without the PipeWire backend. Set up builds one that has it into ~/.local/bin."
+              : "Set up installs CamillaDSP and a virtual CamillaDSP output. It opens a terminal, since installing packages may ask for your password."
+          }
+
+          Message {
+            visible: root.dspState === "bypassed" && text !== ""
+            text: Model.bypassReason(root.status)
+          }
+
+          Message {
+            visible: root.dspState === "failed"
+            text: "CamillaDSP stopped. See: journalctl --user -u omarchy-camilladsp"
+            urgent: true
+          }
+
+          Message {
+            visible: root.actionError !== ""
+            text: root.actionError
+            urgent: true
           }
 
           Column {
             width: parent.width
-            spacing: Style.space(6)
-            visible: !root.presetsCollapsed
+            spacing: Style.spacing.labelGap
+            visible: root.dspState !== "setup" && root.dspState !== "loading"
 
-            Repeater {
-              model: root.presets
+            InfoPair { label: "Output"; value: Model.outputLabel(root.status) || "—" }
+          }
+
+          // ---------- Presets ----------
+          PanelSeparator { foreground: root.bar.foreground; visible: root.presets.length > 0 }
+
+          Column {
+            width: parent.width
+            spacing: Style.space(6)
+            visible: root.presets.length > 0
+
+            Item {
+              width: parent.width
+              implicitHeight: Math.max(presetHeader.implicitHeight, editButton.implicitHeight)
+
+              FoldHeader {
+                id: presetHeader
+                anchors.left: parent.left
+                anchors.right: editButton.visible ? editButton.left : parent.right
+                anchors.rightMargin: editButton.visible ? Style.space(8) : 0
+                anchors.verticalCenter: parent.verticalCenter
+                text: "Presets"
+                collapsed: root.presetsCollapsed
+                summary: root.status ? Model.presetTitle(root.status, root.status.preset) : ""
+                onToggled: root.setCollapsed("presetsCollapsed", !root.presetsCollapsed)
+              }
 
               Button {
-                id: presetButton
-                required property var modelData
-                required property int index
-                width: parent.width
-                leftAlign: true
-                // Long names (a calibration is named after the output) end in "…"
-                // instead of running past the panel: Button only elides on newer
-                // Omarchy releases, so the text is elided here.
-                text: presetName.elidedText
-                tooltipText: presetName.elidedText !== modelData.title ? modelData.title : ""
-                iconText: Model.isCalibrated(modelData.id) ? "\uf130" : ""
-                foreground: root.bar.foreground
-                fontFamily: root.bar.fontFamily
-                fontSize: Style.font.bodySmall
-                active: !!root.status && root.status.preset === modelData.id
-                hasCursor: root.cursorActive && root.presetIndex === index
-                enabled: !root.busy
-                onClicked: root.applyPreset(modelData.id)
-                onHovered: function(h) {
-                  if (h) {
-                    root.cursorActive = true
-                    root.presetIndex = index
+                id: editButton
+                visible: !root.presetsCollapsed
+                  anchors.right: parent.right
+                  anchors.verticalCenter: parent.verticalCenter
+                  text: "Edit"
+                  iconText: "\uf044"
+                  foreground: root.bar.foreground
+                  fontFamily: root.bar.fontFamily
+                  fontSize: Style.font.caption
+                  onClicked: root.editPresets()
+                }
+            }
+
+            Column {
+              width: parent.width
+              spacing: Style.space(6)
+              visible: !root.presetsCollapsed
+
+              Repeater {
+                model: root.presets
+
+                Button {
+                  id: presetButton
+                  required property var modelData
+                  required property int index
+                  width: parent.width
+                  leftAlign: true
+                  // Long names (a calibration is named after the output) end in "…"
+                  // instead of running past the panel: Button only elides on newer
+                  // Omarchy releases, so the text is elided here.
+                  text: presetName.elidedText
+                  tooltipText: presetName.elidedText !== modelData.title ? modelData.title : ""
+                  iconText: Model.isCalibrated(modelData.id) ? "\uf130" : ""
+                  foreground: root.bar.foreground
+                  fontFamily: root.bar.fontFamily
+                  fontSize: Style.font.bodySmall
+                  active: !!root.status && root.status.preset === modelData.id
+                  hasCursor: root.cursorActive && root.presetIndex === index
+                  enabled: !root.busy
+                  onClicked: root.applyPreset(modelData.id)
+                  onHovered: function(h) {
+                    if (h) {
+                      root.cursorActive = true
+                      root.presetIndex = index
+                    }
+                  }
+
+                  TextMetrics {
+                    id: presetName
+                    text: presetButton.modelData.title
+                    font.family: presetButton.fontFamily
+                    font.pixelSize: presetButton.fontSize
+                    elide: Text.ElideRight
+                    elideWidth: Math.max(0, presetButton.width - presetButton.horizontalPadding * 2
+                      - (presetButton.iconText !== "" ? presetButton.iconSize + Style.space(10) : 0) - Style.space(6))
                   }
                 }
-
-                TextMetrics {
-                  id: presetName
-                  text: presetButton.modelData.title
-                  font.family: presetButton.fontFamily
-                  font.pixelSize: presetButton.fontSize
-                  elide: Text.ElideRight
-                  elideWidth: Math.max(0, presetButton.width - presetButton.horizontalPadding * 2
-                    - (presetButton.iconText !== "" ? presetButton.iconSize + Style.space(10) : 0) - Style.space(6))
-                }
-              }
-          }
-          }
-        }
-
-        // ---------- Calibrated sound: the four switches ----------
-        PanelSeparator { foreground: root.bar.foreground; visible: !!root.activeFit }
-
-        Column {
-          width: parent.width
-          spacing: Style.space(8)
-          visible: !!root.activeFit
-
-          FoldHeader {
-            width: parent.width
-            text: "Calibrated sound"
-            collapsed: root.soundCollapsed
-            summary: Model.switchSummary(root.options)
-            onToggled: root.setCollapsed("soundCollapsed", !root.soundCollapsed)
-          }
-
-          Repeater {
-            model: root.soundCollapsed ? [] : Model.SWITCHES
-
-            SwitchRow {
-              required property var modelData
-              label: modelData.label
-              tint: root.themeColor(modelData.color)
-              description: modelData.key === "deep_bass" ? Model.deepBassDescription(Model.deepBassCorner(root.activeFit))
-                : (modelData.key === "fuller_bass" && root.activeFit
-                  ? "Lifts the bass 4 dB from about " + Math.round(Model.fullerBassFreq(root.activeFit)) + " Hz down, trimming the rest so it cannot clip."
-                  : modelData.description)
-              checked: root.options[modelData.key] === true
-              available: modelData.key !== "deep_bass" || Model.deepBassCorner(root.activeFit) > 0
-              onSwitched: function(on) { root.setOption(modelData.option, on) }
+            }
             }
           }
 
-          // Loudness follows the output's volume. When the volume is turned on
-          // an amplifier instead, the output sits at full and there is nothing
-          // to follow: the strength says how loud to assume the music plays.
+          // ---------- Calibrated sound: the four switches ----------
+          PanelSeparator { foreground: root.bar.foreground; visible: !!root.activeFit }
+
           Column {
             width: parent.width
-            spacing: Style.space(6)
-            visible: !root.soundCollapsed && root.options.loudness === true
+            spacing: Style.space(8)
+            visible: !!root.activeFit
 
-            Choice {
-              label: "Loudness strength"
-              options: [
-                { value: "volume", label: "Follow volume" },
-                { value: "some", label: "Some" },
-                { value: "full", label: "Full" }
-              ]
-              value: root.options.loudness_level || "volume"
-              onPicked: function(v) { root.run(["calibrate", "option", "loudness-level", v]) }
+            FoldHeader {
+              width: parent.width
+              text: "Calibrated sound"
+              collapsed: root.soundCollapsed
+              summary: Model.switchSummary(root.options)
+              onToggled: root.setCollapsed("soundCollapsed", !root.soundCollapsed)
             }
 
-            Message {
-              text: Model.loudnessNote(root.status)
-                + ((root.options.loudness_level || "volume") === "volume"
-                  ? " Turn the volume down to hear it, or use Some or Full if the volume is set on an amplifier." : "")
+            Repeater {
+              model: root.soundCollapsed ? [] : Model.SWITCHES
+
+              SwitchRow {
+                required property var modelData
+                label: modelData.label
+                tint: root.themeColor(modelData.color)
+                description: modelData.key === "deep_bass" ? Model.deepBassDescription(Model.deepBassCorner(root.activeFit))
+                  : (modelData.key === "fuller_bass" && root.activeFit
+                    ? "Lifts the bass 4 dB from about " + Math.round(Model.fullerBassFreq(root.activeFit)) + " Hz down, trimming the rest so it cannot clip."
+                    : modelData.description)
+                checked: root.options[modelData.key] === true
+                available: modelData.key !== "deep_bass" || Model.deepBassCorner(root.activeFit) > 0
+                onSwitched: function(on) { root.setOption(modelData.option, on) }
+              }
+            }
+
+            // Loudness follows the output's volume. When the volume is turned on
+            // an amplifier instead, the output sits at full and there is nothing
+            // to follow: the strength says how loud to assume the music plays.
+            Column {
+              width: parent.width
+              spacing: Style.space(6)
+              visible: !root.soundCollapsed && root.options.loudness === true
+
+              Choice {
+                label: "Loudness strength"
+                options: [
+                  { value: "volume", label: "Follow volume" },
+                  { value: "some", label: "Some" },
+                  { value: "full", label: "Full" }
+                ]
+                value: root.options.loudness_level || "volume"
+                onPicked: function(v) { root.run(["calibrate", "option", "loudness-level", v]) }
+              }
+
+              Message {
+                text: Model.loudnessNote(root.status)
+                  + ((root.options.loudness_level || "volume") === "volume"
+                    ? " Turn the volume down to hear it, or use Some or Full if the volume is set on an amplifier." : "")
+              }
             }
           }
-        }
 
-        // ---------- Calibration ----------
-        PanelSeparator { foreground: root.bar.foreground; visible: root.dspState !== "setup" && root.dspState !== "loading" }
+          // ---------- Calibration ----------
+          PanelSeparator { foreground: root.bar.foreground; visible: root.dspState !== "setup" && root.dspState !== "loading" }
 
-        Column {
-          width: parent.width
-          spacing: Style.space(10)
-          visible: root.dspState !== "setup" && root.dspState !== "loading"
-
-          FoldHeader {
-            width: parent.width
-            text: "Calibrate with a microphone"
-            collapsed: root.micCollapsed
-            summary: Model.micSummary(root.micInfo, root.position)
-            onToggled: root.setCollapsed("micCollapsed", !root.micCollapsed)
-          }
-
-          // The microphone segment, down to where the sound is chosen.
           Column {
             width: parent.width
             spacing: Style.space(10)
-            visible: !root.micCollapsed
+            visible: root.dspState !== "setup" && root.dspState !== "loading"
+
+            FoldHeader {
+              width: parent.width
+              text: "Calibrate with a microphone"
+              collapsed: root.micCollapsed
+              summary: Model.micSummary(root.micInfo, root.position)
+              onToggled: root.setCollapsed("micCollapsed", !root.micCollapsed)
+            }
+
+            // The microphone segment, down to where the sound is chosen.
+            Column {
+              width: parent.width
+              spacing: Style.space(10)
+              visible: !root.micCollapsed
+
+              Dropdown {
+                width: parent.width
+                label: "Microphone"
+                fontFamily: root.bar.fontFamily
+                options: root.micOptions
+                value: root.mic
+                enabled: !root.busy && root.measurementCount === 0
+                onChanged: function(v) { root.mic = v }
+            }
 
             Dropdown {
               width: parent.width
-              label: "Microphone"
+              label: "Microphone calibration"
               fontFamily: root.bar.fontFamily
-              options: root.micOptions
-              value: root.mic
-              enabled: !root.busy && root.measurementCount === 0
-              onChanged: function(v) { root.mic = v }
-          }
+              options: root.calibrationOptions
+              value: root.micCalibration
+              visible: root.mic !== "" && (root.calibrationOptions.length > 1 || root.micCalibration !== "")
+              enabled: !root.busy
+              onChanged: function(v) { root.setMicCalibration(v) }
+            }
 
-          Dropdown {
-            width: parent.width
-            label: "Microphone calibration"
-            fontFamily: root.bar.fontFamily
-            options: root.calibrationOptions
-            value: root.micCalibration
-            visible: root.mic !== "" && (root.calibrationOptions.length > 1 || root.micCalibration !== "")
-            enabled: !root.busy
-            onChanged: function(v) { root.setMicCalibration(v) }
-          }
+            Message {
+              text: Model.calibrationHint(root.micInfo, root.calibrationOptions)
+            }
 
-          Message {
-            text: Model.calibrationHint(root.micInfo, root.calibrationOptions)
-          }
+            Choice {
+              label: "Microphone is"
+              options: [
+                { value: "nearfield", label: "Near the speakers" },
+                { value: "listening", label: "Where I sit" }
+              ]
+              value: root.position
+              onPicked: function(v) { root.position = v }
+            }
 
-          Choice {
-            label: "Microphone is"
-            options: [
-              { value: "nearfield", label: "Near the speakers" },
-              { value: "listening", label: "Where I sit" }
-            ]
-            value: root.position
-            onPicked: function(v) { root.position = v }
-          }
+            Message {
+              text: root.position === "listening"
+                ? "Put the microphone where your head usually is. Measure from a few spots around it and the correction averages them, which also tames the room. Both speakers are time and level aligned to that spot."
+                : "Measures the speakers themselves: the room barely counts. The built-in microphone works for this."
+            }
+            }
 
-          Message {
-            text: root.position === "listening"
-              ? "Put the microphone where your head usually is. Measure from a few spots around it and the correction averages them, which also tames the room. Both speakers are time and level aligned to that spot."
-              : "Measures the speakers themselves: the room barely counts. The built-in microphone works for this."
-          }
-          }
+            Choice {
+              label: "Sound"
+              options: [
+                { value: "flat", label: "Neutral" },
+                { value: "warm", label: "Warm" },
+                { value: "room", label: "Room" }
+              ]
+              value: root.target
+              onPicked: function(v) { root.target = v }
+            }
 
-          Choice {
-            label: "Sound"
-            options: [
-              { value: "flat", label: "Neutral" },
-              { value: "warm", label: "Warm" },
-              { value: "room", label: "Room" }
-            ]
-            value: root.target
-            onPicked: function(v) { root.target = v }
-          }
+            TargetStrip {
+              width: parent.width
+              height: Style.space(44)
+            }
 
-          TargetStrip {
-            width: parent.width
-            height: Style.space(44)
-          }
+            Choice {
+              label: "Correction"
+              options: [
+                { value: "peq", label: "Parametric EQ" },
+                { value: "fir", label: "Detailed EQ" },
+                { value: "mixed", label: "Room Correction" }
+              ]
+              value: root.roomCorrection ? "mixed" : root.mode
+              onPicked: function(v) { if (v !== (root.roomCorrection ? "mixed" : root.mode)) root.mode = v }
+            }
 
-          Choice {
-            label: "Correction"
-            options: [
-              { value: "peq", label: "Parametric EQ" },
-              { value: "fir", label: "Detailed EQ" },
-              { value: "mixed", label: "Room Correction" }
-            ]
-            value: root.mode
-            onPicked: function(v) { root.mode = v }
-          }
-
-          Text {
-            width: parent.width
-            text: root.mode === "mixed"
-              ? "FIR, tone and timing: the bass arrives with the rest. Adds 50 ms of delay."
-              : (root.mode === "fir" ? "FIR, tone only: finer detail than the parametric EQ." : "Up to ten smooth adjustments per speaker.")
-            textFormat: Text.PlainText
-            wrapMode: Text.WordWrap
-            color: root.bar.foreground
-            opacity: 0.6
-            font.family: root.bar.fontFamily
-            font.pixelSize: Style.font.caption
-          }
-
-          ResponseGraph {
-            width: parent.width
-            height: Style.space(130)
-            visible: !!(root.session && root.session.grid)
-          }
-
-          // Progress while measuring.
-          Column {
-            width: parent.width
-            spacing: Style.space(6)
-            visible: root.calibrating
+            // Room Correction comes in two strengths, each its own preset,
+            // so both can be built and compared by ear.
+            Choice {
+              visible: root.roomCorrection
+              label: "Timing"
+              options: [
+                { value: "mixed", label: "Strong" },
+                { value: "mixed-gentle", label: "Gentle" }
+              ]
+              value: root.mode
+              onPicked: function(v) { root.mode = v }
+            }
 
             Text {
-              text: root.calMessage + (root.calStage === "measure" ? " · keep quiet" : "")
+              width: parent.width
+              text: root.mode === "mixed"
+                ? "FIR, tone and timing: the bass arrives with the rest, reaching into the roll-off. Adds 50 ms of delay."
+                : root.mode === "mixed-gentle"
+                ? "FIR, tone and timing, holding back near the roll-off: less ringing ahead of a note. Adds 50 ms of delay."
+                : (root.mode === "fir" ? "FIR, tone only: finer detail than the parametric EQ." : "Up to ten smooth adjustments per speaker.")
               textFormat: Text.PlainText
+              wrapMode: Text.WordWrap
               color: root.bar.foreground
+              opacity: 0.6
               font.family: root.bar.fontFamily
-              font.pixelSize: Style.font.bodySmall
+              font.pixelSize: Style.font.caption
             }
 
-            Rectangle {
+            ResponseGraph {
               width: parent.width
-              height: Style.space(6)
-              radius: height / 2
-              color: Qt.rgba(root.bar.foreground.r, root.bar.foreground.g, root.bar.foreground.b, 0.12)
+              height: Style.space(130)
+              visible: !!(root.session && root.session.grid)
+            }
+
+            // Progress while measuring.
+            Column {
+              width: parent.width
+              spacing: Style.space(6)
+              visible: root.calibrating
+
+              Text {
+                text: root.calMessage + (root.calStage === "measure" ? " · keep quiet" : "")
+                textFormat: Text.PlainText
+                color: root.bar.foreground
+                font.family: root.bar.fontFamily
+                font.pixelSize: Style.font.bodySmall
+              }
 
               Rectangle {
-                height: parent.height
-                radius: parent.radius
-                width: Math.max(parent.height, parent.width * root.calFraction)
-                color: root.colorPlanned
-                // Style.duration honours reduced motion where the release has it.
-                Behavior on width { NumberAnimation { duration: typeof Style.duration === "function" ? Style.duration(250) : 250; easing.type: Easing.OutCubic } }
+                width: parent.width
+                height: Style.space(6)
+                radius: height / 2
+                color: Qt.rgba(root.bar.foreground.r, root.bar.foreground.g, root.bar.foreground.b, 0.12)
+
+                Rectangle {
+                  height: parent.height
+                  radius: parent.radius
+                  width: Math.max(parent.height, parent.width * root.calFraction)
+                  color: root.colorPlanned
+                  // Style.duration honours reduced motion where the release has it.
+                  Behavior on width { NumberAnimation { duration: typeof Style.duration === "function" ? Style.duration(250) : 250; easing.type: Easing.OutCubic } }
+                }
               }
             }
-          }
 
-          Message { visible: root.calError !== ""; text: root.calError; urgent: true }
+            Message { visible: root.calError !== ""; text: root.calError; urgent: true }
 
-          Repeater {
-            model: root.calWarnings
-            Message { required property var modelData; text: modelData }
-          }
-
-          Message {
-            visible: !root.calibrating && text !== ""
-            text: root.fitMatches
-              ? Model.fitSummary(root.fit) + (Model.checkSummary(root.check) ? "\n" + Model.checkSummary(root.check) : "")
-              : root.previewReady
-                ? "With these settings: " + Model.fitSummary(root.preview).replace(/^Off target by/, "off target by") + ". Build to use them."
-                : (root.previewFailedKey === root.selectionKey ? root.previewError
-                  : (root.previewing ? "Working out what these settings would do…" : ""))
-          }
-
-          Row {
-            id: actions
-            width: parent.width
-            spacing: Style.space(6)
-            readonly property real cellWidth: (width - spacing * 3) / 4
-
-            Button {
-              width: actions.cellWidth
-              text: root.measurementCount === 0 ? "Measure" : "Measure +1"
-              tooltipText: root.measurementCount === 0
-                ? "About 30 seconds of sweeps"
-                : root.measurementCount + " position" + (root.measurementCount === 1 ? "" : "s") + " so far. Move the microphone a little and measure again"
-              foreground: root.bar.foreground
-              fontFamily: root.bar.fontFamily
-              fontSize: Style.font.bodySmall
-              bordered: true
-              enabled: !root.busy && root.mic !== "" && root.output !== ""
-              opacity: enabled ? 1 : 0.4
-              onClicked: root.measure()
+            Repeater {
+              model: root.calWarnings
+              Message { required property var modelData; text: modelData }
             }
 
-            Button {
-              width: actions.cellWidth
-              text: "Build"
-              tooltipText: "Fit filters to the measurements and listen"
-              foreground: root.bar.foreground
-              fontFamily: root.bar.fontFamily
-              fontSize: Style.font.bodySmall
-              bordered: true
-              active: root.measurementCount > 0 && !root.fit
-              enabled: !root.busy && root.measurementCount > 0
-              opacity: enabled ? 1 : 0.4
-              onClicked: root.build()
+            Message {
+              visible: !root.calibrating && text !== ""
+              text: root.fitMatches
+                ? Model.fitSummary(root.fit) + (Model.checkSummary(root.check) ? "\n" + Model.checkSummary(root.check) : "")
+                : root.previewReady
+                  ? "With these settings: " + Model.fitSummary(root.preview).replace(/^Off target by/, "off target by") + ". Build to use them."
+                  : (root.previewFailedKey === root.selectionKey ? root.previewError
+                    : (root.previewing ? "Working out what these settings would do…" : ""))
             }
 
-            Button {
-              width: actions.cellWidth
-              text: "Check"
-              tooltipText: "Measure again through CamillaDSP and compare with the plan"
-              foreground: root.bar.foreground
-              fontFamily: root.bar.fontFamily
-              fontSize: Style.font.bodySmall
-              bordered: true
-              // Checks the calibration the current choices name, so it must be the one playing.
-              enabled: !root.busy && root.fitMatches && root.dspState === "on" && root.status.preset === root.fit.preset
-              opacity: enabled ? 1 : 0.4
-              onClicked: root.startCalibration("check")
-            }
+            Row {
+              id: actions
+              width: parent.width
+              spacing: Style.space(6)
+              readonly property real cellWidth: (width - spacing * 3) / 4
 
-            Button {
-              width: actions.cellWidth
-              text: "Start over"
-              foreground: root.bar.foreground
-              fontFamily: root.bar.fontFamily
-              fontSize: Style.font.bodySmall
-              enabled: !root.busy && root.measurementCount > 0
-              opacity: enabled ? 1 : 0.4
-              onClicked: root.run(["calibrate", "reset"])
+              Button {
+                width: actions.cellWidth
+                text: root.measurementCount === 0 ? "Measure" : "Measure +1"
+                tooltipText: root.measurementCount === 0
+                  ? "About 30 seconds of sweeps"
+                  : root.measurementCount + " position" + (root.measurementCount === 1 ? "" : "s") + " so far. Move the microphone a little and measure again"
+                foreground: root.bar.foreground
+                fontFamily: root.bar.fontFamily
+                fontSize: Style.font.bodySmall
+                bordered: true
+                enabled: !root.busy && root.mic !== "" && root.output !== ""
+                opacity: enabled ? 1 : 0.4
+                onClicked: root.measure()
+              }
+
+              Button {
+                width: actions.cellWidth
+                text: "Build"
+                tooltipText: "Fit filters to the measurements and listen"
+                foreground: root.bar.foreground
+                fontFamily: root.bar.fontFamily
+                fontSize: Style.font.bodySmall
+                bordered: true
+                active: root.measurementCount > 0 && !root.fit
+                enabled: !root.busy && root.measurementCount > 0
+                opacity: enabled ? 1 : 0.4
+                onClicked: root.build()
+              }
+
+              Button {
+                width: actions.cellWidth
+                text: "Check"
+                tooltipText: "Measure again through CamillaDSP and compare with the plan"
+                foreground: root.bar.foreground
+                fontFamily: root.bar.fontFamily
+                fontSize: Style.font.bodySmall
+                bordered: true
+                // Checks the calibration the current choices name, so it must be the one playing.
+                enabled: !root.busy && root.fitMatches && root.dspState === "on" && root.status.preset === root.fit.preset
+                opacity: enabled ? 1 : 0.4
+                onClicked: root.startCalibration("check")
+              }
+
+              Button {
+                width: actions.cellWidth
+                text: "Start over"
+                foreground: root.bar.foreground
+                fontFamily: root.bar.fontFamily
+                fontSize: Style.font.bodySmall
+                enabled: !root.busy && root.measurementCount > 0
+                opacity: enabled ? 1 : 0.4
+                onClicked: root.run(["calibrate", "reset"])
+              }
             }
           }
         }

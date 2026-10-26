@@ -153,7 +153,7 @@ function fitSummary(fit) {
   after /= fit.channels.length
   var filters = 0
   for (var j = 0; j < fit.channels.length; j++) filters += (fit.channels[j].filters || []).length
-  var kind = fit.mode === "fir" ? "Detailed EQ" : (fit.mode === "mixed" ? "Room Correction" : filters + " filters")
+  var kind = { fir: "Detailed EQ", mixed: "Room Correction", "mixed-gentle": "Room Correction, gentle" }[fit.mode] || filters + " filters"
   return "Off target by " + db(before) + " before, " + db(after) + " planned (" + kind + ")" + timingSummary(fit.channels, "planned")
 }
 

@@ -56,7 +56,7 @@ Usage: camilladsp-omarchy <command>
   status [--json]        Show what is running and where audio goes
   calibrate <command>    Measure with a microphone and build a preset:
                            devices | measure --output O --mic M [--position nearfield|listening]
-                           fit [--target flat|warm|room|FILE] [--mode peq|fir|mixed] [--preview] | apply [id] | check
+                           fit [--target flat|warm|room|FILE] [--mode peq|fir|mixed|mixed-gentle] [--preview] | apply [id] | check
                            option <loudness|fuller-bass|louder|deep-bass|calibration> <on|off>
                            summary | reset
   uninstall              Turn off and remove the services and sink (presets are kept)

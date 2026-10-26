@@ -363,6 +363,27 @@ class TimingTest(unittest.TestCase):
         self.assertGreater(np.max(dsp.combine(spots)[0]["delay_spread"][mid]), 1.0)
         self.assertLess(moved(spots), min(moved([spots[0]]), moved([spots[1]])))
 
+    def test_strong_reaches_into_the_roll_off(self):
+        target = dsp.target_curve("flat")
+        lags = {}
+        for strength in ("gentle", "strong"):
+            taps, knee, _corr, info = dsp.timing_correction(self.channels[0], target, strength=strength)
+            hp = [("Highpass", knee, 0, 0.707)] if knee > 30 else []
+            lags[strength] = chain_lag(taps, hp)
+            bass = dsp.GRID < 100
+            cycles = dsp.TIMING_STRENGTHS[strength]["bass_cycles"]
+            self.assertLessEqual(np.max(-info["shift"][bass] * dsp.GRID[bass] / 1000), cycles + 0.01)
+            lags[strength + " error"] = info["timing_after"]
+        at = lambda strength, hz: float(np.interp(hz, dsp.GRID, lags[strength]))  # noqa: E731
+        self.assertLess(at("strong", 40), at("gentle", 40) / 2)
+        self.assertLess(lags["strong error"], lags["gentle error"])
+
+    def test_ringing_spikes_do_not_count_as_lateness(self):
+        spike = np.where(np.abs(np.log2(dsp.GRID / 100)) < 1 / 12, 15.0, 0.0)
+        self.assertLess(dsp.timing_error(spike, 40), 0.5)
+        broad = np.where(dsp.GRID < 100, 10.0, 0.0)
+        self.assertGreater(dsp.timing_error(broad, 40), 5.0)
+
     def test_older_measurements_are_refused(self):
         old = dict(self.channels[0])
         del old["delay"], old["delay_spread"]

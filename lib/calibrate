@@ -4,7 +4,7 @@
 
   calibrate devices                       outputs and microphones, as JSON
   calibrate measure --output O --mic M [--position nearfield|listening]
-  calibrate fit [--target flat|warm|room|FILE] [--mode peq|fir|mixed] [--align auto|on|off] [--preview]
+  calibrate fit [--target flat|warm|room|FILE] [--mode peq|fir|mixed|mixed-gentle] [--align auto|on|off] [--preview]
   calibrate check                         replay through CamillaDSP and compare
   calibrate mic-cal --mic M (--file F | --clear)
                                           use a calibration file for a microphone
@@ -44,9 +44,12 @@ SESSION = os.path.join(STATE, "calibration")
 PRESETS = os.path.join(CONFIG, "presets")
 TARGET_NAMES = {"flat": "Neutral", "warm": "Warm", "room": "Room"}
 # peq: parametric EQ. fir: the same smoothed correction in finer detail, as a
-# minimum-phase FIR. mixed: that, and the bass brought forward in time.
-MODE_NAMES = {"peq": "EQ", "fir": "Detailed EQ", "mixed": "Room Correction"}
-MODE_DETAILS = {"peq": "parametric EQ", "fir": "detailed EQ (FIR)", "mixed": "room correction (FIR, tone and timing)"}
+# minimum-phase FIR. mixed: that, and the bass brought forward in time;
+# mixed-gentle the same, more cautiously (see TIMING_STRENGTHS).
+MODE_NAMES = {"peq": "EQ", "fir": "Detailed EQ", "mixed": "Room Correction",
+              "mixed-gentle": "Room Correction (gentle)"}
+MODE_DETAILS = {"peq": "parametric EQ", "fir": "detailed EQ (FIR)", "mixed": "room correction (FIR, tone and timing)",
+                "mixed-gentle": "gentle room correction (FIR, tone and timing)"}
 
 
 def preset_id(target, mode):
@@ -73,7 +76,7 @@ def preset_spec(fit):
     per_channel = [{"filters": c["filters"], "delay_ms": c.get("delay_ms", 0.0), "trim_db": c.get("trim_db", 0.0)}
                    for c in fit["channels"]]
     fir_files = ([os.path.join(FILTERS, f"{fit['preset']}-ch{ch}.wav") for ch in range(len(per_channel))]
-                 if fit["mode"] in ("fir", "mixed") else None)
+                 if fit["mode"] != "peq" else None)
     knees = [c["knee"] for c in fit["channels"] if c.get("knee", 0) > 30]
 
     def on_grid(values):
@@ -525,11 +528,12 @@ def cmd_fit(args):
     fir_files = None
     for ch, c in enumerate(channels):
         timing = {}
-        if args.mode in ("fir", "mixed"):
+        if args.mode != "peq":
             if args.mode == "fir":
                 taps, knee, corr = dsp.fir_correction(c, target)
             else:
-                taps, knee, corr, timing = dsp.timing_correction(c, target)
+                taps, knee, corr, timing = dsp.timing_correction(
+                    c, target, strength="gentle" if args.mode == "mixed-gentle" else "strong")
             filters = [{"type": "Highpass", "freq": round(knee, 1), "q": 0.707}] if knee > 30 else []
             path = os.path.join(FILTERS, f"{preset_id(args.target, args.mode)}-ch{ch}.wav")
             if not args.preview:
@@ -742,7 +746,7 @@ def main():
     m.add_argument("--position", choices=["nearfield", "listening"], default="nearfield")
     f = sub.add_parser("fit")
     f.add_argument("--target", default="flat")
-    f.add_argument("--mode", choices=["peq", "fir", "mixed"], default="peq")
+    f.add_argument("--mode", choices=["peq", "fir", "mixed", "mixed-gentle"], default="peq")
     f.add_argument("--align", choices=["auto", "on", "off"], default="auto")
     f.add_argument("--preview", action="store_true", help="show what the fit would be without saving anything")
     sub.add_parser("check")

@@ -76,6 +76,7 @@ const tests = {
       { error_before: 2, error_after: 1.2, timing_before: 6, timing_after: 2 }] }
     assert.strictEqual(M.fitSummary(mixed),
       "Off target by 2.5 dB before, 1.1 dB planned (Room Correction); bass 7.0 ms late before, 2.5 ms planned")
+    assert.match(M.fitSummary({ ...mixed, mode: "mixed-gentle" }), /\(Room Correction, gentle\)/)
     assert.match(M.checkSummary({ channels: [{ error_before: 4, error_after: 1, plan_deviation: 0.3, timing_before: 9, timing_after: 1.5 }] }),
       /plan; bass 9\.0 ms late before, 1\.5 ms with$/)
     assert.strictEqual(M.checkSummary({ channels: [{ error_before: 4, error_after: 1, plan_deviation: 0.3 }] }),

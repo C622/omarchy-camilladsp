@@ -740,6 +740,14 @@ TIMING_LATENCY = 0.05
 # Never by more than this many periods, which keeps the ringing the
 # correction adds ahead of a bass note short enough to stay unheard.
 TIMING_MAX_CYCLES = 1.0
+# Two strengths. Gentle starts at the knee and moves at most one period.
+# Strong starts half an octave below the knee, where the speaker's own roll-off
+# makes the bass latest, and below 100 Hz moves up to one and a half periods
+# (one again by 200 Hz): ringing that low is masked by the note itself.
+TIMING_STRENGTHS = {
+    "gentle": {"below_knee": 1.0, "bass_cycles": 1.0},
+    "strong": {"below_knee": 2 ** -0.5, "bass_cycles": 1.5},
+}
 # How far, in periods, the positions and repeats may disagree on the timing
 # before it is trusted less.
 TIMING_AGREEMENT = 0.1
@@ -762,17 +770,26 @@ def timing_lag(channel, filters, corr, fs=FS):
 
 
 def timing_error(lag, lo, hi=300.0):
-    """RMS lateness in ms over lo..hi Hz, the bass a timing correction can reach."""
+    """RMS lateness in ms over lo..hi Hz, the bass a timing correction can reach.
+
+    Through a running median over half an octave: a resonance shows as a
+    narrow spike of delay, which is ringing for the tone correction to cut,
+    not lateness that moving the bass in time could fix.
+    """
     band = (GRID >= max(lo, 30.0)) & (GRID <= hi)
-    return float(np.sqrt(np.mean(lag[band] ** 2))) if band.any() else 0.0
+    if not band.any():
+        return 0.0
+    logf = np.log2(GRID)
+    steady = np.array([np.median(lag[np.abs(logf - lf) <= 0.25]) for lf in logf[band]])
+    return float(np.sqrt(np.mean(steady ** 2)))
 
 
-def timing_correction(channel, target, taps=32768, fs=FS, fmax=18000.0):
+def timing_correction(channel, target, taps=32768, fs=FS, fmax=18000.0, strength="strong"):
     """FIR that corrects the tone like fir_correction and the timing of the bass.
 
     The bass is brought forward to arrive with the midrange, by at most
-    TIMING_MAX_CYCLES periods and TIMING_LATENCY, which the whole filter is
-    delayed by so it stays causal. Where the noise floor or the positions
+    TIMING_LATENCY, which the whole filter is delayed by so it stays causal,
+    and by the periods TIMING_STRENGTHS allows for `strength`. Where the noise floor or the positions
     and repeats disagree, the timing is corrected less.
     Returns (taps array, knee, tone correction dB on GRID, info) with the
     lateness before and after in info.
@@ -783,16 +800,19 @@ def timing_correction(channel, target, taps=32768, fs=FS, fmax=18000.0):
     filters = [{"type": "Highpass", "freq": knee, "q": 0.707}] if knee > 30 else []
     lag = timing_lag(channel, filters, corr, fs)
 
-    # Where to correct: from just above the knee to TIMING_FMAX, half an
+    # Where to correct: from the strength's start to TIMING_FMAX, half an
     # octave in at each end, and only what the measurements agree on.
+    how = TIMING_STRENGTHS[strength]
     lo = max(knee, F_LOW * 1.25)
-    fade = np.clip(np.log2(GRID / lo) * 2, 0, 1) * np.clip(np.log2(TIMING_FMAX / GRID) * 1.5, 0, 1)
+    start = max(lo * how["below_knee"], F_LOW * 1.25)
+    fade = np.clip(np.log2(GRID / start) * 2, 0, 1) * np.clip(np.log2(TIMING_FMAX / GRID) * 1.5, 0, 1)
     trust = 1 / (1 + np.exp(-(channel["snr"] - 12) / 3))
     # Disagreement swings from one frequency to the next; judge it over a
     # third of an octave, the span the shift is smoothed over.
     trust /= 1 + (_smooth_linear(channel["delay_spread"], 3) / 1000 * GRID / TIMING_AGREEMENT) ** 2
     shift = -lag * fade * trust
-    limit = np.minimum(TIMING_MAX_CYCLES / GRID, TIMING_LATENCY * 0.9) * 1000
+    cycles = TIMING_MAX_CYCLES + (how["bass_cycles"] - TIMING_MAX_CYCLES) * np.clip(np.log2(200.0 / GRID), 0, 1)
+    limit = np.minimum(cycles / GRID, TIMING_LATENCY * 0.9) * 1000
     shift = _smooth_linear(np.clip(shift, -limit, limit), 3)
 
     # Group delay to phase: integrate down from the top, where the shift is 0.
@@ -804,7 +824,7 @@ def timing_correction(channel, target, taps=32768, fs=FS, fmax=18000.0):
     phase = 2 * np.pi * (np.cumsum(gd[::-1])[::-1] - gd) * df
     # A real filter has a real response at 0 Hz: wind what the shift left
     # there to the nearest whole turn, below the band where nothing plays.
-    corner = max(lo / 2, 8.0)
+    corner = max(start / 2, 8.0)
     below = freqs < corner
     turn = 2 * np.pi * round(phase[0] / (2 * np.pi))
     phase[below] += (turn - phase[0]) * (1 - freqs[below] / corner)
