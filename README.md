@@ -31,6 +31,16 @@ Adding the plugin only copies it into `~/.config/omarchy/plugins/`; nothing runs
 | `python-numpy`, `python-scipy` | Measurement analysis and filter fitting | Set up, from the Arch repositories |
 | `python`, `jq`, `pactl`, `pw-cli`, `pw-link`, `pw-play`, `pw-record` | Control, routing and measuring | Already part of Omarchy |
 
+### Upgrading from 1.0.1 or earlier: one required step
+
+Versions before 1.0.2 started CamillaDSP with its websocket open on a local port, with no authentication, so any other account on the machine could take control of it and overwrite your files. Newer versions start it without one. The panel replaces the old service and restarts CamillaDSP without the port as soon as it loads. But Omarchy runs no plugin code on update, so **if the CamillaDSP widget is not in your bar, nothing does this for you**. After updating, run this once:
+
+```bash
+~/.config/omarchy/plugins/c622.camilladsp/bin/camilladsp-omarchy status
+```
+
+To check, `ps -o args= -C camilladsp` must not show `--port`. If you don't want the plugin any more, [remove it](#removing-it) instead; `uninstall` stops and deletes the old service as well.
+
 ## Removing it
 
 Turn CamillaDSP off and remove what Set up installed, then remove the plugin:
@@ -146,7 +156,7 @@ See [Removing it](#removing-it) for taking it all out again.
 
 CamillaDSP's two PipeWire streams are only ever allowed to connect where they were sent. When it turns on, the plugin pins the output to the real device and checks the links. Anything that would let CamillaDSP hear its own output, a feedback loop, is disconnected. The WirePlumber rule stops WirePlumber falling back to another device if the sink or the output disappears, so a vanished device means silence rather than a loop.
 
-CamillaDSP runs without its websocket, so the plugin opens no network port. That websocket has no authentication, and any local account could reach it and load a config that writes to your files. Presets, switches and Loudness all work by writing the config and sending CamillaDSP a reload signal instead. Versions before 1.0.2 did open one; after updating, CamillaDSP is restarted without it as soon as the panel loads.
+CamillaDSP runs without its websocket, so the plugin opens no network port. That websocket has no authentication, and any local account could reach it and load a config that writes to your files. Presets, switches and Loudness all work by writing the config and sending CamillaDSP a reload signal instead. Versions before 1.0.2 did open one; see [Upgrading from 1.0.1 or earlier](#upgrading-from-101-or-earlier-one-required-step).
 
 ## Development
 
