@@ -58,7 +58,7 @@ If something switches the default output away from CamillaDSP, the panel says **
 
 Presets are CamillaDSP configs without the `devices` section, in `~/.config/camilladsp/presets/`, applied in file-name order. Six ship with the plugin: Flat, Bass boost, Vocal clarity, Treble lift, Laptop speakers and Headphone crossfeed. Each brings its own headroom so it cannot clip.
 
-Write your own, or drop in a full config from elsewhere: any `devices:` block is replaced with the plugin's. Every preset is checked with `camilladsp --check` before it is applied, and a broken one is refused with CamillaDSP's error rather than half-applied. The panel shows a warning if CamillaDSP ever clips.
+Write your own, or drop in a full config from elsewhere: any `devices:` block is replaced with the plugin's. Every preset is checked with `camilladsp --check` before it is applied, and a broken one is refused with CamillaDSP's error rather than half-applied.
 
 ## Calibrating
 
@@ -74,7 +74,7 @@ When a calibrated preset is playing, the panel shows five switches under **Calib
 
 | Switch | What it does |
 |---|---|
-| **Loudness** | Fuller sound at low volume, like the loudness button on a stereo. A small service follows the output's own volume and feeds it to CamillaDSP's `Loudness` filter, which boosts bass and treble as you turn down. It lowers the mids rather than boosting the ends, so it can't clip after the volume control. If you set the volume on an amplifier, the output stays at full and there is nothing to follow: pick **Some** or **Full** under *Loudness strength* instead of *Follow volume*. The panel shows how much of the boost is applied right now. |
+| **Loudness** | Fuller sound at low volume, like the loudness button on a stereo. A small service follows the output's own volume; as you turn down, the plugin writes a bass and a treble shelf into the config and has CamillaDSP reload it, which changes the gains without interrupting the sound. It lowers the mids rather than boosting the ends, so it can't clip after the volume control. If you set the volume on an amplifier, the output stays at full and there is nothing to follow: pick **Some** or **Full** under *Loudness strength* instead of *Follow volume*. The panel shows how much of the boost is applied right now. |
 | **Fuller bass** | A +4 dB low shelf just above where the speakers give up (twice the high-pass corner, 60 to 200 Hz), paid for by a 4 dB input trim so the added bass cannot clip, the way the Speaker Calibrator's *Bass: Full* works. |
 | **Make it louder** | Gives back the volume the correction takes away, up to 6 dB, plus Fuller bass's trim, with a limiter at −1 dBFS to catch peaks. |
 | **Deep bass** | Suggests the bass the speakers play thinly or not at all. What lies below where they are about 6 dB short of the target is driven into a clipper, and the harmonics between that point and three times it are mixed back ahead of the EQ, the bankstown recipe built from CamillaDSP's own mixers, biquads and limiter. Only offered when the measurement found a bass limit. |
@@ -135,7 +135,7 @@ camilladsp-omarchy calibrate devices | measure | fit | apply | check | summary |
 | Path | What |
 |---|---|
 | `~/.config/camilladsp/presets/` | Presets, yours to edit |
-| `~/.config/camilladsp/omarchy.conf` | Optional overrides: `port`, `samplerate`, `chunksize`, `camilladsp_version`. Leave `port` unset and the plugin picks a free one, starting at 15342; CamillaDSP's usual 1234 is also LM Studio's. |
+| `~/.config/camilladsp/omarchy.conf` | Optional overrides: `samplerate`, `chunksize`. |
 | `~/.config/camilladsp/mic-calibration/` | Microphone calibration files and which microphone uses which |
 | `~/.config/camilladsp/filters/` | FIR filters written by the calibrator |
 | `~/.local/state/omarchy-camilladsp/` | Generated config, selected preset and output, measurements |
@@ -145,6 +145,8 @@ See [Removing it](#removing-it) for taking it all out again.
 ## Safety notes
 
 CamillaDSP's two PipeWire streams are only ever allowed to connect where they were sent. When it turns on, the plugin pins the output to the real device and checks the links. Anything that would let CamillaDSP hear its own output, a feedback loop, is disconnected. The WirePlumber rule stops WirePlumber falling back to another device if the sink or the output disappears, so a vanished device means silence rather than a loop.
+
+CamillaDSP runs without its websocket, so the plugin opens no network port. That websocket has no authentication, and any local account could reach it and load a config that writes to your files. Presets, switches and Loudness all work by writing the config and sending CamillaDSP a reload signal instead.
 
 ## Development
 

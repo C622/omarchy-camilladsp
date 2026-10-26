@@ -433,15 +433,6 @@ Panel {
   onSelectionKeyChanged: previewTimer.restart()
   onFitMatchesChanged: previewTimer.restart()
 
-  // Load and clipping only change while audio plays, and only matter while
-  // someone is looking: read them while the panel is open.
-  Timer {
-    interval: 2000
-    repeat: true
-    running: root.opened && root.dspState === "on" && !root.busy
-    onTriggered: root.refresh()
-  }
-
   BarIconButton {
     id: button
     anchors.fill: parent
@@ -577,15 +568,6 @@ Panel {
         }
 
         Message {
-          visible: !!root.status && !!root.status.portConflict
-          text: root.status && root.status.portConflict
-            ? "CamillaDSP cannot be controlled: its port " + root.status.port + " is taken by " + root.status.portConflict
-              + ". Loudness and the live readings need it. Turn CamillaDSP off and on to move to a free port."
-            : ""
-          urgent: true
-        }
-
-        Message {
           visible: root.actionError !== ""
           text: root.actionError
           urgent: true
@@ -597,33 +579,6 @@ Panel {
           visible: root.dspState !== "setup" && root.dspState !== "loading"
 
           InfoPair { label: "Output"; value: Model.outputLabel(root.status) || "—" }
-
-          Row {
-            width: parent.width
-            visible: Model.clipped(root.status) > 0
-            spacing: Style.space(8)
-
-            Text {
-              width: parent.width - resetClip.width - parent.spacing
-              anchors.verticalCenter: parent.verticalCenter
-              text: Model.clipped(root.status) + " samples clipped. Lower the preset's preamp gain."
-              textFormat: Text.PlainText
-              wrapMode: Text.WordWrap
-              color: Commons.Color.urgent
-              font.family: root.bar.fontFamily
-              font.pixelSize: Style.font.bodySmall
-            }
-
-            Button {
-              id: resetClip
-              text: "Reset"
-              foreground: root.bar.foreground
-              fontFamily: root.bar.fontFamily
-              fontSize: Style.font.caption
-              bordered: true
-              onClicked: root.run(["reset-clipping"])
-            }
-          }
         }
 
         // ---------- Presets ----------

@@ -1,14 +1,18 @@
 #!/usr/bin/python3 -I
 
-"""Tell CamillaDSP's loudness compensation how loud the output is playing.
+"""Tell the Loudness stage of a calibrated preset how loud the music plays.
 
-  loudness-tracker <websocket-port> <state-dir>
+  loudness-tracker <state-dir>
 
 Hearing loses bass and treble as the level drops, so quiet music sounds thin.
-The Loudness filter in a calibrated preset puts that back, but only knows how
-much to when it is told the listening level, and with Omarchy that level is
-the real output's volume, set after CamillaDSP. This watches that volume and
-sends it to the filter's fader as an external volume.
+The Loudness stage puts that back, but only knows how much to when it is told
+the listening level, and with Omarchy that level is the real output's volume,
+set after CamillaDSP. This watches that volume and hands it to
+camilladsp-omarchy, which fills the gains into the config and reloads it;
+CamillaDSP applies changed filter gains without interrupting the sound.
+
+It never talks to CamillaDSP itself: CamillaDSP runs without its websocket,
+which has no authentication and would be open to every local account.
 
 It reacts to PulseAudio events instead of polling, and re-reads the output
 CamillaDSP plays to on every change, so switching outputs is followed too.
@@ -27,8 +31,9 @@ import subprocess
 import sys
 import time
 
-FADER = 1  # Aux1, LOUDNESS_FADER in calibration_dsp.py
 HERE = os.path.dirname(os.path.realpath(__file__))
+CONTROL = os.path.join(HERE, "..", "bin", "camilladsp-omarchy")
+LEVELS = {"volume": 0.0, "some": -12.0, "full": -25.0}  # LOUDNESS_LEVELS in calibration_dsp.py
 
 
 def target(state_dir):
@@ -37,9 +42,6 @@ def target(state_dir):
             return f.read().strip()
     except OSError:
         return ""
-
-
-LEVELS = {"volume": 0.0, "some": -12.0, "full": -25.0}  # LOUDNESS_LEVELS in calibration_dsp.py
 
 
 def level_offset(state_dir):
@@ -60,15 +62,15 @@ def volume_db(sink):
     return max(values) if values else None
 
 
-def send(port, db):
-    command = '{"SetFaderExternalVolume": [%d, %.2f]}' % (FADER, max(db, -100.0))
-    result = subprocess.run([sys.executable, "-I", os.path.join(HERE, "camilla-ws"), str(port), command],
-                            capture_output=True, text=True, timeout=5)
-    return result.returncode == 0 and '"Ok"' in result.stdout
+def send(level):
+    """Hand the listening level on, rounded to the half dB nobody can hear past."""
+    result = subprocess.run([CONTROL, "loudness", "%.1f" % (round(level * 2) / 2)],
+                            capture_output=True, text=True, timeout=30)
+    return result.returncode == 0
 
 
 def main():
-    port, state_dir = int(sys.argv[1]), sys.argv[2]
+    state_dir = sys.argv[1]
     last = None
     while True:
         events = subprocess.Popen(["pactl", "subscribe"], stdout=subprocess.PIPE, text=True)
@@ -78,10 +80,11 @@ def main():
                 sink = target(state_dir)
                 db = volume_db(sink) if sink else None
                 if db is not None:
-                    db += level_offset(state_dir)
-                # CamillaDSP may still be starting; keep trying until it answers.
+                    db = max(db + level_offset(state_dir), -100.0)
+                # Keep trying while the control command fails, as it can while
+                # CamillaDSP is still starting.
                 if db is not None and db != last:
-                    last = db if send(port, db) else None
+                    last = db if send(db) else None
                 pending = last is None and db is not None
             ready, _, _ = select.select([events.stdout], [], [], 1.0 if pending else None)
             if ready:
@@ -90,8 +93,9 @@ def main():
                     break
                 if "on sink #" in line or "on server" in line:
                     pending = True
-                    # A volume drag is a burst of events; read it as one.
-                    while select.select([events.stdout], [], [], 0.05)[0]:
+                    # A volume drag is a burst of events; read it as one, and
+                    # wait for it to settle so a drag is a few reloads, not dozens.
+                    while select.select([events.stdout], [], [], 0.15)[0]:
                         if not events.stdout.readline():
                             break
         events.kill()

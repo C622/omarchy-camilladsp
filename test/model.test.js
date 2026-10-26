@@ -13,7 +13,7 @@ const base = {
   installed: true, pipewire: true, setup: true, service: "active", defaultSink: "camilladsp",
   target: "alsa_output.speakers", targetDescription: "Speakers", preset: "10-bass-boost",
   presets: [{ id: "00-flat", title: "Flat" }, { id: "10-bass-boost", title: "Bass boost" }],
-  dsp: { GetState: "Running", GetProcessingLoad: 0.4123, GetClippedSamples: 0, GetCaptureRate: 44100 },
+  loudnessLevel: null,
 }
 const tests = {
   "state follows setup, service and routing"() {
@@ -25,11 +25,9 @@ const tests = {
     assert.strictEqual(M.state(base, false), "bypassed")
     assert.strictEqual(M.state(base, true), "on")
   },
-  "hero status reads rate and load"() {
-    assert.strictEqual(M.heroStatus(base, true), "On · 44.1 kHz · 0.4% load")
-    assert.strictEqual(M.heroStatus({ ...base, dsp: null }, true), "On")
+  "hero status says what is running"() {
+    assert.strictEqual(M.heroStatus(base, true), "On")
     assert.strictEqual(M.heroStatus({ ...base, pipewire: false }, true), "Needs the PipeWire backend")
-    assert.strictEqual(M.rateLabel(48000), "48 kHz")
   },
   "bypass names where audio goes instead"() {
     assert.match(M.bypassReason({ ...base, defaultSink: "alsa_output.headphones" }), /alsa_output.headphones/)
@@ -129,11 +127,11 @@ const tests = {
     assert.strictEqual(M.paletteColor(colors, "orange"), "#F38BA8ff")
   },
   "loudness note, switch summary, deep bass text"() {
-    const at = v => ({ dsp: { GetFaders: [{ volume: 0 }, { volume: v }] } })
+    const at = v => ({ loudnessLevel: v })
     assert.strictEqual(M.loudnessNote(at(0)), "Now: no boost (listening level 0 dB).")
     assert.strictEqual(M.loudnessNote(at(-15)), "Now: 50% of the boost (listening level -15 dB).")
     assert.strictEqual(M.loudnessNote(at(-40)), "Now: the full boost (listening level -40 dB).")
-    assert.match(M.loudnessNote({ dsp: null }), /not reporting/)
+    assert.match(M.loudnessNote({ loudnessLevel: null }), /Waiting/)
     assert.strictEqual(M.switchSummary({ loudness: true, louder: false, deep_bass: true, calibration: true }), "loudness · deep bass")
     assert.strictEqual(M.switchSummary({ calibration: false }), "calibration off")
     assert.strictEqual(M.switchSummary({}), "plain calibration")
@@ -154,7 +152,7 @@ const tests = {
     const loud = M.switchedCurve(fit, { loudness: true }, 1)
     assert.ok(loud[0] - loud[2] > 4, JSON.stringify(loud))
     assert.ok(M.switchesShape({ louder: true }) && !M.switchesShape({ deep_bass: true, calibration: true }))
-    assert.strictEqual(M.loudnessShare({ dsp: { GetFaders: [{}, { volume: -15 }] } }, {}), 0.5)
+    assert.strictEqual(M.loudnessShare({ loudnessLevel: -15 }, {}), 0.5)
     assert.strictEqual(M.loudnessShare(null, { loudness_level: "full" }), 1)
   },
   "fuller bass and wider deep bass"() {

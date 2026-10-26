@@ -23,19 +23,6 @@ function parse(text) {
   }
 }
 
-function rateLabel(hz) {
-  var value = Number(hz)
-  if (!isFinite(value) || value <= 0) return ""
-  var khz = Math.round(value / 100) / 10
-  return (khz % 1 === 0 ? khz.toFixed(0) : khz.toFixed(1)) + " kHz"
-}
-
-function loadLabel(percent) {
-  var value = Number(percent)
-  if (!isFinite(value)) return ""
-  return (value < 10 ? value.toFixed(1) : value.toFixed(0)) + "% load"
-}
-
 function state(status, routedLive) {
   if (!status) return "loading"
   if (!status.installed || !status.pipewire || !status.setup) return "setup"
@@ -62,13 +49,7 @@ function heroStatus(status, routedLive) {
   case "off": return "Off"
   case "bypassed": return "Bypassed"
   }
-  var parts = ["On"]
-  var dsp = status.dsp || {}
-  var rate = rateLabel(dsp.GetCaptureRate)
-  if (rate) parts.push(rate)
-  var load = loadLabel(dsp.GetProcessingLoad)
-  if (load) parts.push(load)
-  return parts.join(" · ")
+  return "On"
 }
 
 function outputLabel(status) {
@@ -79,12 +60,6 @@ function outputLabel(status) {
 function bypassReason(status) {
   if (!status || !status.defaultSink || status.defaultSink === SINK) return ""
   return "Audio goes straight to " + status.defaultSink + ". Turn on again to route it through CamillaDSP."
-}
-
-function clipped(status) {
-  var dsp = status && status.dsp
-  var value = dsp ? Number(dsp.GetClippedSamples) : 0
-  return isFinite(value) ? value : 0
 }
 
 function tooltip(status, routedLive) {
@@ -294,15 +269,13 @@ var SWITCHES = [
     description: "Off plays the plain speakers, level matched, so only the tone changes." }
 ]
 
-// How much of the Loudness boost is applied now, from the fader the tracker
-// sets: none above the filter's reference level (-5 dB, LOUDNESS in
-// calibration_dsp.py), all of it 20 dB below. Empty while it is unknown.
+// How much of the Loudness boost is applied now, from the listening level the
+// tracker last wrote: none at the reference level (-5 dB, LOUDNESS in
+// calibration_dsp.py), all of it 20 dB below.
 function loudnessNote(status) {
-  if (!status || !status.dsp) return "CamillaDSP is not reporting the listening level yet."
-  var faders = status.dsp.GetFaders
-  if (!faders || !faders[1]) return "CamillaDSP is not reporting the listening level."
-  var level = Number(faders[1].volume)
-  if (!isFinite(level)) return ""
+  var level = status ? Number(status.loudnessLevel) : NaN
+  if (!status || status.loudnessLevel === null || status.loudnessLevel === undefined || !isFinite(level))
+    return "Waiting for the listening level."
   var share = Math.max(0, Math.min(1, (-5 - level) / 20))
   var amount = share === 0 ? "no boost" : (share === 1 ? "the full boost" : Math.round(share * 100) + "% of the boost")
   return "Now: " + amount + " (listening level " + level.toFixed(0) + " dB)."
@@ -402,11 +375,11 @@ function shelfDb(kind, freq, gain, hz) {
 var LOUDNESS = { reference: -5, low: 6, high: 3 }
 var LOUDNESS_LEVELS = { volume: 0, some: -12, full: -25 }
 
-// How much of the Loudness boost applies, 0 to 1: from the fader the tracker
-// set when CamillaDSP reports it, otherwise from the strength alone.
+// How much of the Loudness boost applies, 0 to 1: from the listening level the
+// tracker wrote when there is one, otherwise from the strength alone.
 function loudnessShare(status, options) {
-  var faders = status && status.dsp ? status.dsp.GetFaders : null
-  var level = faders && faders[1] ? Number(faders[1].volume)
+  var known = status && status.loudnessLevel !== null && status.loudnessLevel !== undefined
+  var level = known ? Number(status.loudnessLevel)
     : LOUDNESS_LEVELS[(options && options.loudness_level) || "volume"] || 0
   return Math.max(0, Math.min(1, (LOUDNESS.reference - level) / 20))
 }
@@ -501,8 +474,8 @@ function meanCurve(curves) {
 
 if (typeof module !== "undefined") {
   module.exports = {
-    calibrationId: calibrationId, isCalibrated: isCalibrated, parse: parse, rateLabel: rateLabel, loadLabel: loadLabel, state: state, presetTitle: presetTitle,
-    heroStatus: heroStatus, outputLabel: outputLabel, bypassReason: bypassReason, clipped: clipped,
+    calibrationId: calibrationId, isCalibrated: isCalibrated, parse: parse, state: state, presetTitle: presetTitle,
+    heroStatus: heroStatus, outputLabel: outputLabel, bypassReason: bypassReason,
     tooltip: tooltip, usableMics: usableMics, micInfo: micInfo, calibrationOptions: calibrationOptions, calibrationPath: calibrationPath,
     isMeasurementMic: isMeasurementMic, calibrationHint: calibrationHint, event: event, fitSummary: fitSummary,
     checkSummary: checkSummary, curvePoints: curvePoints, smoothCurve: smoothCurve, micSummary: micSummary,

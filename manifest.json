@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "c622.camilladsp",
   "name": "CamillaDSP",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "author": "C622",
   "license": "MIT",
   "description": "System-wide EQ and room correction through CamillaDSP, with on/off and preset switching from the Omarchy bar.",
@@ -14,7 +14,7 @@
   },
   "barWidget": {
     "displayName": "CamillaDSP",
-    "description": "Route all audio through CamillaDSP, pick a preset, and watch load and clipping.",
+    "description": "Route all audio through CamillaDSP and pick a preset.",
     "category": "Audio",
     "allowMultiple": false,
     "defaultSection": "right",

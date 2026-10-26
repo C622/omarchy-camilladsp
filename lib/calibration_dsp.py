@@ -705,10 +705,15 @@ DEFAULT_OPTIONS = {"loudness": False, "fuller_bass": False, "louder": False, "de
 # the music plays. "volume" follows the output alone; the others are for a
 # volume set further on, on an amplifier, where the output sits at full.
 LOUDNESS_LEVELS = {"volume": 0.0, "some": -12.0, "full": -25.0}
-# Loudness compensation follows the output's own volume, sent by
-# lib/loudness-tracker to fader Aux1. Full boost 20 dB below the reference.
-LOUDNESS_FADER = "Aux1"
+# Loudness compensation follows the listening level, which lib/loudness-tracker
+# writes for camilladsp-omarchy to fill into the active config: the same two
+# shelves CamillaDSP's own Loudness filter uses, at a share of their boost,
+# with the mids turned down by the larger boost so it cannot clip. Full boost
+# 20 dB below the reference. It is not CamillaDSP's Loudness filter, which
+# would need its websocket, and that would be open to every local account.
 LOUDNESS = {"reference_level": -5.0, "low_boost": 6.0, "high_boost": 3.0}
+# Placeholders in a preset, replaced with gains when the config is rendered.
+LOUDNESS_PLACEHOLDERS = ("__loudness_low__", "__loudness_high__", "__loudness_mid__")
 # Fuller bass: a low shelf clear of the high-pass corner, paid for by an
 # input trim of the same size so the bass it adds cannot clip.
 FULLER_BASS_DB = 4.0
@@ -719,6 +724,14 @@ DEEP_BASS_CLIP_DB = -10.0
 DEEP_BASS_MIX_DB = -12.0
 MAX_MAKEUP_DB = 6.0
 LIMIT_DB = -1.0
+
+
+def loudness_gains(level_db):
+    """Low shelf, high shelf and mid gains for a listening level in dB, as
+    CamillaDSP's Loudness filter works them out with attenuate_mid."""
+    share = min(max((LOUDNESS["reference_level"] - level_db) / 20.0, 0.0), 1.0)
+    low, high = LOUDNESS["low_boost"] * share, LOUDNESS["high_boost"] * share
+    return round(low, 2), round(high, 2), round(-max(low, high), 2)
 
 
 def deep_bass_corner(knee, fmin):
@@ -782,8 +795,10 @@ def preset_yaml(title, description, per_channel, preamp_db, fir_files=None, opti
         steps.append(f"    names: [{', '.join(names)}]")
 
     if opts["loudness"]:
-        filter_step([add_filter("loudness", "Loudness", fader=LOUDNESS_FADER, attenuate_mid="true",
-                                **LOUDNESS)])
+        low, high, mid = LOUDNESS_PLACEHOLDERS
+        filter_step([add_filter("loudness_low", "Biquad", type="Lowshelf", freq=70, slope=12, gain=low),
+                     add_filter("loudness_high", "Biquad", type="Highshelf", freq=3500, slope=12, gain=high),
+                     add_filter("loudness_mid", "Gain", gain=mid)])
 
     corner = knee if deep_bass_hz is None else deep_bass_hz
     deep_bass = opts["deep_bass"] and corner > 30

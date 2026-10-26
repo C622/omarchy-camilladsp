@@ -6,7 +6,7 @@ BindsTo=omarchy-camilladsp.service
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 -I @PLUGIN@/lib/loudness-tracker @PORT@ @STATE_DIR@
+ExecStart=/usr/bin/python3 -I @PLUGIN@/lib/loudness-tracker @STATE_DIR@
 Restart=on-failure
 RestartSec=2
 

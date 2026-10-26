@@ -234,11 +234,17 @@ class SwitchesTest(unittest.TestCase):
         text = dsp.preset_yaml("t", "d", self.PER, -0.5, options={"deep_bass": True}, knee=0.0, level_db=-3.0)
         self.assertNotIn("deep_bass", text)
 
-    def test_loudness_follows_the_external_fader(self):
+    def test_loudness_is_shelves_filled_in_at_render_time(self):
         text = self.preset(loudness=True)
-        self.assertIn("type: Loudness", text)
-        self.assertIn("fader: Aux1", text)
-        self.assertIn("attenuate_mid: true", text)
+        self.assertNotIn("type: Loudness", text)
+        for placeholder in dsp.LOUDNESS_PLACEHOLDERS:
+            self.assertIn(placeholder, text)
+        self.assertIn("type: Lowshelf", text)
+        self.assertIn("type: Highshelf", text)
+        # No boost at the reference level, all of it 20 dB below.
+        self.assertEqual(dsp.loudness_gains(-5.0), (0.0, 0.0, 0.0))
+        self.assertEqual(dsp.loudness_gains(-15.0), (3.0, 1.5, -3.0))
+        self.assertEqual(dsp.loudness_gains(-60.0), (6.0, 3.0, -6.0))
 
     def test_fuller_bass_is_a_trimmed_shelf(self):
         text = dsp.preset_yaml("t", "d", self.PER, -0.5, options={"fuller_bass": True}, knee=46.0,
