@@ -4,7 +4,7 @@
 
   calibrate devices                       outputs and microphones, as JSON
   calibrate measure --output O --mic M [--position nearfield|listening]
-  calibrate fit [--target flat|warm|room|FILE] [--mode peq|fir] [--align auto|on|off] [--preview]
+  calibrate fit [--target flat|warm|room|FILE] [--mode peq|fir|mixed] [--align auto|on|off] [--preview]
   calibrate check                         replay through CamillaDSP and compare
   calibrate mic-cal --mic M (--file F | --clear)
                                           use a calibration file for a microphone
@@ -43,7 +43,10 @@ CONFIG = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~
 SESSION = os.path.join(STATE, "calibration")
 PRESETS = os.path.join(CONFIG, "presets")
 TARGET_NAMES = {"flat": "Neutral", "warm": "Warm", "room": "Room"}
-MODE_NAMES = {"peq": "EQ", "fir": "FIR"}
+# peq: parametric EQ. fir: the same smoothed correction in finer detail, as a
+# minimum-phase FIR. mixed: that, and the bass brought forward in time.
+MODE_NAMES = {"peq": "EQ", "fir": "Detailed EQ", "mixed": "Room Correction"}
+MODE_DETAILS = {"peq": "parametric EQ", "fir": "detailed EQ (FIR)", "mixed": "room correction (FIR, tone and timing)"}
 
 
 def preset_id(target, mode):
@@ -70,7 +73,7 @@ def preset_spec(fit):
     per_channel = [{"filters": c["filters"], "delay_ms": c.get("delay_ms", 0.0), "trim_db": c.get("trim_db", 0.0)}
                    for c in fit["channels"]]
     fir_files = ([os.path.join(FILTERS, f"{fit['preset']}-ch{ch}.wav") for ch in range(len(per_channel))]
-                 if fit["mode"] == "fir" else None)
+                 if fit["mode"] in ("fir", "mixed") else None)
     knees = [c["knee"] for c in fit["channels"] if c.get("knee", 0) > 30]
 
     def on_grid(values):
@@ -521,8 +524,12 @@ def cmd_fit(args):
     per_channel, corrections, report = [], [], []
     fir_files = None
     for ch, c in enumerate(channels):
-        if args.mode == "fir":
-            taps, knee, corr = dsp.fir_correction(c, target)
+        timing = {}
+        if args.mode in ("fir", "mixed"):
+            if args.mode == "fir":
+                taps, knee, corr = dsp.fir_correction(c, target)
+            else:
+                taps, knee, corr, timing = dsp.timing_correction(c, target)
             filters = [{"type": "Highpass", "freq": round(knee, 1), "q": 0.707}] if knee > 30 else []
             path = os.path.join(FILTERS, f"{preset_id(args.target, args.mode)}-ch{ch}.wav")
             if not args.preview:
@@ -533,18 +540,19 @@ def cmd_fit(args):
             info = {"knee": knee, "fmin": dsp.fit_floor(c["mean"], target, knee), "fmax": 18000.0}
             info["error_before"] = dsp.correction_error(c, target, filters)
             info["error_after"] = dsp._cost(*_fir_residual(c, target, filters, corr, info))
+            timing = {k: round(float(v), 2) for k, v in timing.items() if k != "shift"}
         else:
             filters, info = dsp.fit_peq(c, target)
             correction = dsp.peq_db([f for f in filters if f["type"] != "Highpass"])
         trim = trims[ch]["trim_db"]
         corrections.append(correction + trim)
         per_channel.append({"filters": filters, **trims[ch]})
-        predicted = c["mean"] + dsp.peq_db(filters) + (correction if args.mode == "fir" else 0) + trim
+        predicted = c["mean"] + dsp.peq_db(filters) + (correction if args.mode != "peq" else 0) + trim
         report.append({
             "filters": filters, "delay_ms": trims[ch]["delay_ms"], "trim_db": trim,
             "knee": info["knee"], "fmin": info["fmin"], "fmax": info["fmax"],
             "error_before": info["error_before"], "error_after": info["error_after"],
-            "measured": display(c["mean"]), "predicted": display(predicted),
+            "measured": display(c["mean"]), "predicted": display(predicted), **timing,
         })
 
     preamp = dsp.preamp_for(corrections)
@@ -552,7 +560,7 @@ def cmd_fit(args):
     pid = preset_id(args.target, args.mode)
     title = preset_title(args.target, args.mode)
     detail = (f"For {name}: {len(session)} position{'s' if len(session) != 1 else ''}, {args.target} target, "
-              f"{'FIR' if args.mode == 'fir' else 'parametric EQ'}"
+              f"{MODE_DETAILS[args.mode]}"
               f"{', aligned' if align else ''}, measured {session[-1]['time'][:10]}")
     fit = {"preset": pid, "title": title, "description": detail, "target": args.target, "mode": args.mode,
            "aligned": align, "preamp_db": preamp, "output": session[0]["output"], "mic": session[0]["mic"],
@@ -648,6 +656,11 @@ def cmd_check(args):
         report.append({"error_before": err(r["mean"]), "error_after": err(a["mean"]),
                        "plan_deviation": float(np.sqrt(np.sum(w * off ** 2) / max(np.sum(w), 1e-9))),
                        "raw": display(r["mean"]), "checked": display(a["mean"])})
+        # How late the bass arrives at this spot, straight and through CamillaDSP.
+        if "timing_from" in planned and "delay" in r and "delay" in a:
+            ref = (dsp.GRID >= 500) & (dsp.GRID <= 1500)
+            for key, m in (("timing_before", r), ("timing_after", a)):
+                report[-1][key] = round(dsp.timing_error(m["delay"] - np.mean(m["delay"][ref]), planned["timing_from"]), 2)
     check = {"channels": report, "warnings": raw_result["warnings"] + result["warnings"],
              "time": datetime.datetime.now().isoformat(timespec="seconds")}
     check["preset"] = fit["preset"]
@@ -729,7 +742,7 @@ def main():
     m.add_argument("--position", choices=["nearfield", "listening"], default="nearfield")
     f = sub.add_parser("fit")
     f.add_argument("--target", default="flat")
-    f.add_argument("--mode", choices=["peq", "fir"], default="peq")
+    f.add_argument("--mode", choices=["peq", "fir", "mixed"], default="peq")
     f.add_argument("--align", choices=["auto", "on", "off"], default="auto")
     f.add_argument("--preview", action="store_true", help="show what the fit would be without saving anything")
     sub.add_parser("check")

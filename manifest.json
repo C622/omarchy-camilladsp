@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "c622.camilladsp",
   "name": "CamillaDSP",
-  "version": "1.0.3",
+  "version": "1.1.0",
   "author": "C622",
   "license": "MIT",
   "description": "System-wide EQ and room correction through CamillaDSP, with on/off and preset switching from the Omarchy bar.",

@@ -154,18 +154,23 @@ def transfer(segment, excitation_segment, fs=FS):
     return y * np.conj(x) / (power + eps), n
 
 
-def windowed_response(ir, peak, fs=FS, cycles=15.0, min_gate=0.003, max_gate=0.3):
+def windowed_response(ir, peak, fs=FS, cycles=15.0, min_gate=0.003, max_gate=0.3, delays=False, delay_cycles=4.0):
     """Magnitude on GRID through a gate of `cycles` periods at each frequency.
 
     Long gates at low frequencies, short ones at high frequencies: the direct
     sound and the nearest reflections stay in, later room reflections stay out.
-    Returns dB on GRID.
+    Each gate opens a quarter of its length before the peak (1 to 20 ms), so
+    bass that a timing correction moved ahead of the peak is not cut off.
+    Returns dB on GRID; with delays, also the group delay in ms relative to
+    the peak, power-averaged over a sixth of an octave, through gates of only
+    `delay_cycles` periods: the timing of the speaker, not of the room's
+    later reflections, which differs from one spot to the next.
     """
-    pre = int(0.001 * fs)
     gates = np.geomspace(min_gate, max_gate, 14)
-    curves = []
+    curves, lags = [], []
     for gate in gates:
         length = int(gate * fs)
+        pre = int(min(max(gate / 4, 0.001), 0.02) * fs)
         start = max(0, peak - pre)
         seg = ir[start:peak + length].copy()
         rise = min(pre, peak - start)
@@ -174,17 +179,38 @@ def windowed_response(ir, peak, fs=FS, cycles=15.0, min_gate=0.003, max_gate=0.3
         fall = max(1, length // 3)
         seg[-fall:] *= 0.5 + 0.5 * np.cos(np.linspace(0, np.pi, fall))
         n = max(1 << int(math.ceil(math.log2(len(seg) * 4))), 1 << 14)
-        spec = np.abs(np.fft.rfft(seg, n))
+        spec = np.fft.rfft(seg, n)
         freqs = np.fft.rfftfreq(n, 1 / fs)
-        curves.append(20 * np.log10(np.interp(GRID, freqs, spec) + 1e-12))
-    curves = np.array(curves)
-    wanted = np.clip(cycles / GRID, min_gate, max_gate)
-    pos = np.interp(np.log(wanted), np.log(gates), np.arange(len(gates)))
-    lo = np.floor(pos).astype(int)
-    hi = np.minimum(lo + 1, len(gates) - 1)
-    frac = pos - lo
-    idx = np.arange(len(GRID))
-    return curves[lo, idx] * (1 - frac) + curves[hi, idx] * frac
+        curves.append(20 * np.log10(np.interp(GRID, freqs, np.abs(spec)) + 1e-12))
+        if delays:
+            lags.append(_group_delay(spec * np.exp(2j * np.pi * freqs * (peak - start) / fs), freqs))
+    def blend(rows, cycles):
+        rows = np.array(rows)
+        wanted = np.clip(cycles / GRID, min_gate, max_gate)
+        pos = np.interp(np.log(wanted), np.log(gates), np.arange(len(gates)))
+        lo = np.floor(pos).astype(int)
+        hi = np.minimum(lo + 1, len(gates) - 1)
+        frac = pos - lo
+        idx = np.arange(len(GRID))
+        return rows[lo, idx] * (1 - frac) + rows[hi, idx] * frac
+
+    if delays:
+        return blend(curves, cycles), blend(lags, delay_cycles)
+    return blend(curves, cycles)
+
+
+def _group_delay(spec, freqs, fraction=6.0):
+    """Group delay in ms on GRID from a complex spectrum, each point the
+    power-weighted mean over a `fraction` of an octave, so the steep phase
+    jumps at notches, where there is little energy, count for little."""
+    phase = np.unwrap(np.angle(spec))
+    gd = -np.gradient(phase, 2 * np.pi * freqs) * 1000
+    power = np.abs(spec) ** 2
+    cw = np.concatenate([[0.0], np.cumsum(power)])
+    cg = np.concatenate([[0.0], np.cumsum(power * gd)])
+    lo = np.searchsorted(freqs, GRID * 2 ** (-0.5 / fraction))
+    hi = np.maximum(np.searchsorted(freqs, GRID * 2 ** (0.5 / fraction)), lo + 1)
+    return (cg[hi] - cg[lo]) / np.maximum(cw[hi] - cw[lo], 1e-30)
 
 
 def smooth(db, fraction=6.0):
@@ -203,7 +229,7 @@ def analyze(recording, played, schedule, fs=FS, cycles=15.0, max_gate=0.3):
     """Turn one recording of excitation() into per-sweep responses.
 
     Returns a dict with, per channel, the list of repeat curves (dB on GRID),
-    the arrival time of each (seconds, relative to the playback start), the
+    their group delays (ms on GRID, relative to each arrival), the arrival time of each (seconds, relative to the playback start), the
     noise floor curve, and a list of warnings. Raises MeasurementError when the
     recording cannot be trusted.
     """
@@ -221,7 +247,7 @@ def analyze(recording, played, schedule, fs=FS, cycles=15.0, max_gate=0.3):
     tail = int(min(GAP_SECONDS * 0.9, max_gate + 0.1) * fs)
     channels = played.shape[1]
     result = {"channels": [], "warnings": [], "peak_dbfs": float(20 * np.log10(peak + 1e-12))}
-    per_channel = [{"repeats": [], "arrivals": []} for _ in range(channels)]
+    per_channel = [{"repeats": [], "delays": [], "arrivals": []} for _ in range(channels)]
 
     lead = int(LEAD_SECONDS * fs)
     quiet = rec[offset + int(0.1 * fs):offset + lead - int(0.1 * fs)]
@@ -240,7 +266,9 @@ def analyze(recording, played, schedule, fs=FS, cycles=15.0, max_gate=0.3):
         h, n = transfer(segment, exc, fs)
         ir = np.fft.irfft(h, n)[:sweep_len + tail]
         arrival = int(np.argmax(np.abs(ir[:margin + int(0.1 * fs)])))
-        per_channel[ch]["repeats"].append(windowed_response(ir, arrival, fs, cycles, max_gate=max_gate))
+        db, delay = windowed_response(ir, arrival, fs, cycles, max_gate=max_gate, delays=True)
+        per_channel[ch]["repeats"].append(db)
+        per_channel[ch]["delays"].append(np.round(delay, 3))
         per_channel[ch]["arrivals"].append((arrival - margin) / fs)
         per_channel[ch].setdefault("exc", exc)
 
@@ -267,6 +295,7 @@ def analyze(recording, played, schedule, fs=FS, cycles=15.0, max_gate=0.3):
                 "Something moved or made noise during the measurement.")
         result["channels"].append({
             "repeats": [r.tolist() for r in reps],
+            "delays": [d.tolist() for d in per_channel[ch]["delays"]],
             "arrivals": per_channel[ch]["arrivals"],
             "noise": noise.tolist(),
             "snr": snr.tolist(),
@@ -361,6 +390,21 @@ def combine(measurements):
         snr = np.min(np.array([m["channels"][ch]["snr"] for m in measurements]), axis=0)
         arrival = float(np.mean([np.mean(m["channels"][ch]["arrivals"]) for m in measurements]))
         out.append({"mean": mean, "repeats": by_repeat, "spread": spread, "snr": snr, "arrival": arrival})
+        # Timing, from measurements made since it was kept: the group delay
+        # weighted by how loud each sweep was there, and how far the
+        # positions and repeats disagree on it.
+        if all("delays" in m["channels"][ch] for m in measurements):
+            delays = [np.array(m["channels"][ch]["delays"])[:count] for m in measurements]
+            power = [10 ** (r[:count] / 10) for r in reps]
+
+            def weighted(d, p):
+                return np.sum(d * p, axis=0) / np.maximum(np.sum(p, axis=0), 1e-30)
+
+            per_position = [weighted(d, p) for d, p in zip(delays, power)]
+            per_repeat = [weighted(np.array([d[k] for d in delays]), np.array([p[k] for p in power])) for k in range(count)]
+            out[-1]["delay"] = weighted(np.array(per_position), np.array([p.sum(axis=0) for p in power]))
+            out[-1]["delay_spread"] = (np.std(np.vstack([per_repeat, per_position]), axis=0)
+                                       if len(reps) + count > 2 else np.zeros_like(mean))
 
     # One reference level for all channels, so channel balance survives.
     ref_band = (GRID >= 300) & (GRID <= 3000)
@@ -399,6 +443,14 @@ def target_curve(name):
 
 def biquad_db(kind, freq, gain=0.0, q=0.707, fs=FS, freqs=GRID):
     """Magnitude in dB of an RBJ cookbook biquad, the same CamillaDSP uses."""
+    b, den = biquad(kind, freq, gain, q, fs)
+    z = np.exp(-1j * 2 * np.pi * freqs / fs)
+    h = (b[0] + b[1] * z + b[2] * z ** 2) / (den[0] + den[1] * z + den[2] * z ** 2)
+    return 20 * np.log10(np.abs(h) + 1e-15)
+
+
+def biquad(kind, freq, gain=0.0, q=0.707, fs=FS):
+    """RBJ cookbook coefficients (b, a), unnormalized."""
     w0 = 2 * np.pi * freq / fs
     cw, sw = np.cos(w0), np.sin(w0)
     alpha = sw / (2 * q)
@@ -416,9 +468,7 @@ def biquad_db(kind, freq, gain=0.0, q=0.707, fs=FS, freqs=GRID):
         den = [(a + 1) + (a - 1) * cw + sa, -2 * ((a - 1) + (a + 1) * cw), (a + 1) + (a - 1) * cw - sa]
     else:
         raise ValueError(kind)
-    z = np.exp(-1j * 2 * np.pi * freqs / fs)
-    h = (b[0] + b[1] * z + b[2] * z ** 2) / (den[0] + den[1] * z + den[2] * z ** 2)
-    return 20 * np.log10(np.abs(h) + 1e-15)
+    return b, den
 
 
 def peq_db(filters, freqs=GRID):
@@ -624,12 +674,11 @@ def _prune(filters, channel, hp, goal, w, level):
     return kept
 
 
-def fir_correction(channel, target, taps=8192, fs=FS, fmax=18000.0):
-    """Minimum-phase FIR that corrects the smoothed response to the target.
+def magnitude_correction(channel, target, fmax=18000.0):
+    """The smoothed tone correction in dB on GRID, and the knee.
 
     Same budget as the PEQ: dips are only half filled, boosts and cuts are
     clamped, and the correction fades to 0 dB outside the measured band.
-    Returns (taps array, knee, correction dB on GRID).
     """
     mean = smooth(channel["mean"], 6)
     knee = find_knee(mean, target)
@@ -647,7 +696,15 @@ def fir_correction(channel, target, taps=8192, fs=FS, fmax=18000.0):
     fade_lo = np.clip(np.log2(GRID / fmin) * 2 + 1, 0, 1)
     fade_hi = np.clip(np.log2(fmax / GRID) * 2 + 1, 0, 1)
     corr *= fade_lo * fade_hi
+    return knee, corr
 
+
+def fir_correction(channel, target, taps=8192, fs=FS, fmax=18000.0):
+    """Minimum-phase FIR that corrects the smoothed response to the target.
+
+    Returns (taps array, knee, correction dB on GRID).
+    """
+    knee, corr = magnitude_correction(channel, target, fmax)
     n = taps * 2
     freqs = np.fft.rfftfreq(n, 1 / fs)
     mag_db = np.interp(np.log(np.maximum(freqs, F_LOW)), np.log(GRID), corr)
@@ -658,13 +715,116 @@ def fir_correction(channel, target, taps=8192, fs=FS, fmax=18000.0):
 
 def minimum_phase(magnitude, n):
     """Minimum-phase impulse response with the given rfft magnitude (cepstrum)."""
+    return np.fft.irfft(minimum_phase_spectrum(magnitude, n), n)
+
+
+def minimum_phase_spectrum(magnitude, n):
+    """The minimum-phase rfft spectrum with the given magnitude."""
     log_mag = np.log(np.maximum(magnitude, 1e-8))
     cep = np.fft.irfft(log_mag, n)
     fold = np.zeros(n)
     fold[0] = cep[0]
     fold[1:n // 2] = 2 * cep[1:n // 2]
     fold[n // 2] = cep[n // 2]
-    return np.fft.irfft(np.exp(np.fft.rfft(fold, n)), n)
+    return np.exp(np.fft.rfft(fold, n))
+
+
+# ---------- Timing ----------
+
+# Room Correction brings the bass forward in time to arrive with the rest. It
+# works below TIMING_FMAX, where a speaker's timing holds across the room;
+# above it the same correction would help one spot and harm every other.
+TIMING_FMAX = 500.0
+# The added latency: the most the bass can be brought forward.
+TIMING_LATENCY = 0.05
+# Never by more than this many periods, which keeps the ringing the
+# correction adds ahead of a bass note short enough to stay unheard.
+TIMING_MAX_CYCLES = 1.0
+# How far, in periods, the positions and repeats may disagree on the timing
+# before it is trusted less.
+TIMING_AGREEMENT = 0.1
+
+
+def timing_lag(channel, filters, corr, fs=FS):
+    """How late each frequency arrives, in ms on GRID, after the high-pass
+    and the minimum-phase tone correction, relative to 500 Hz to 1.5 kHz."""
+    lag = np.asarray(channel["delay"], dtype=float).copy()
+    w = 2 * np.pi * GRID / fs
+    for f in filters:
+        b, a = biquad(f["type"], f["freq"], f.get("gain", 0.0), f.get("q", 0.707), fs)
+        lag += signal.group_delay((b, a), w=w)[1] / fs * 1000
+    n = 1 << 16
+    freqs = np.fft.rfftfreq(n, 1 / fs)
+    mag_db = np.interp(np.log(np.maximum(freqs, F_LOW)), np.log(GRID), corr)
+    lag += _group_delay(minimum_phase_spectrum(10 ** (mag_db / 20), n), freqs, fraction=48)
+    ref = (GRID >= 500) & (GRID <= 1500)
+    return lag - np.mean(lag[ref])
+
+
+def timing_error(lag, lo, hi=300.0):
+    """RMS lateness in ms over lo..hi Hz, the bass a timing correction can reach."""
+    band = (GRID >= max(lo, 30.0)) & (GRID <= hi)
+    return float(np.sqrt(np.mean(lag[band] ** 2))) if band.any() else 0.0
+
+
+def timing_correction(channel, target, taps=32768, fs=FS, fmax=18000.0):
+    """FIR that corrects the tone like fir_correction and the timing of the bass.
+
+    The bass is brought forward to arrive with the midrange, by at most
+    TIMING_MAX_CYCLES periods and TIMING_LATENCY, which the whole filter is
+    delayed by so it stays causal. Where the noise floor or the positions
+    and repeats disagree, the timing is corrected less.
+    Returns (taps array, knee, tone correction dB on GRID, info) with the
+    lateness before and after in info.
+    """
+    if "delay" not in channel:
+        raise MeasurementError("These measurements were made before Room Correction existed. Measure again to use it.")
+    knee, corr = magnitude_correction(channel, target, fmax)
+    filters = [{"type": "Highpass", "freq": knee, "q": 0.707}] if knee > 30 else []
+    lag = timing_lag(channel, filters, corr, fs)
+
+    # Where to correct: from just above the knee to TIMING_FMAX, half an
+    # octave in at each end, and only what the measurements agree on.
+    lo = max(knee, F_LOW * 1.25)
+    fade = np.clip(np.log2(GRID / lo) * 2, 0, 1) * np.clip(np.log2(TIMING_FMAX / GRID) * 1.5, 0, 1)
+    trust = 1 / (1 + np.exp(-(channel["snr"] - 12) / 3))
+    # Disagreement swings from one frequency to the next; judge it over a
+    # third of an octave, the span the shift is smoothed over.
+    trust /= 1 + (_smooth_linear(channel["delay_spread"], 3) / 1000 * GRID / TIMING_AGREEMENT) ** 2
+    shift = -lag * fade * trust
+    limit = np.minimum(TIMING_MAX_CYCLES / GRID, TIMING_LATENCY * 0.9) * 1000
+    shift = _smooth_linear(np.clip(shift, -limit, limit), 3)
+
+    # Group delay to phase: integrate down from the top, where the shift is 0.
+    n = taps * 2
+    freqs = np.fft.rfftfreq(n, 1 / fs)
+    gd = np.interp(np.log(np.maximum(freqs, F_LOW)), np.log(GRID), shift, left=0.0, right=0.0) / 1000
+    gd[freqs < F_LOW] = 0.0
+    df = freqs[1]
+    phase = 2 * np.pi * (np.cumsum(gd[::-1])[::-1] - gd) * df
+    # A real filter has a real response at 0 Hz: wind what the shift left
+    # there to the nearest whole turn, below the band where nothing plays.
+    corner = max(lo / 2, 8.0)
+    below = freqs < corner
+    turn = 2 * np.pi * round(phase[0] / (2 * np.pi))
+    phase[below] += (turn - phase[0]) * (1 - freqs[below] / corner)
+
+    mag_db = np.interp(np.log(np.maximum(freqs, F_LOW)), np.log(GRID), corr)
+    spectrum = minimum_phase_spectrum(10 ** (mag_db / 20), n) * np.exp(1j * phase - 2j * np.pi * freqs * TIMING_LATENCY)
+    out = np.fft.irfft(spectrum, n)[:taps]
+    rise = int(0.002 * fs)
+    out[:rise] *= 0.5 - 0.5 * np.cos(np.linspace(0, np.pi, rise))
+    out *= np.hanning(2 * taps)[taps:] ** 0.5
+    info = {"timing_before": timing_error(lag, lo), "timing_after": timing_error(lag + shift, lo),
+            "timing_from": lo, "latency_ms": TIMING_LATENCY * 1000, "shift": shift}
+    return out.astype(np.float32), knee, corr, info
+
+
+def _smooth_linear(values, fraction):
+    """Plain fractional-octave moving average on GRID."""
+    logf = np.log2(GRID)
+    half = 0.5 / fraction
+    return np.array([values[np.abs(logf - lf) <= half].mean() for lf in logf])
 
 
 # ---------- Alignment ----------

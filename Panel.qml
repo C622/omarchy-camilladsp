@@ -115,6 +115,9 @@ Panel {
   property string previewKey: ""
   property string previewRunningKey: ""
   property string previewFailedKey: ""
+  // Why the last preview failed, when the calibrator said: Room Correction
+  // needs measurements made since it existed.
+  property string previewError: ""
   property bool previewCancelled: false
   readonly property string selectionKey: target + "/" + mode + "/" + measurementCount
   // The built calibration already is the current choice: show it and its check.
@@ -239,6 +242,7 @@ Panel {
       return
     }
     previewRunningKey = selectionKey
+    previewError = ""
     previewProc.command = [ctl, "calibrate", "fit", "--target", target, "--mode", mode, "--preview"]
     previewProc.running = true
   }
@@ -413,6 +417,8 @@ Panel {
         if (e && e.event === "result" && e.preview) {
           root.preview = e
           root.previewKey = root.previewRunningKey
+        } else if (e && e.event === "error") {
+          root.previewError = String(e.message || "")
         }
       }
     }
@@ -811,10 +817,24 @@ Panel {
             label: "Correction"
             options: [
               { value: "peq", label: "Parametric EQ" },
-              { value: "fir", label: "FIR" }
+              { value: "fir", label: "Detailed EQ" },
+              { value: "mixed", label: "Room Correction" }
             ]
             value: root.mode
             onPicked: function(v) { root.mode = v }
+          }
+
+          Text {
+            width: parent.width
+            text: root.mode === "mixed"
+              ? "FIR, tone and timing: the bass arrives with the rest. Adds 50 ms of delay."
+              : (root.mode === "fir" ? "FIR, tone only: finer detail than the parametric EQ." : "Up to ten smooth adjustments per speaker.")
+            textFormat: Text.PlainText
+            wrapMode: Text.WordWrap
+            color: root.bar.foreground
+            opacity: 0.6
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.caption
           }
 
           ResponseGraph {
@@ -867,7 +887,8 @@ Panel {
               ? Model.fitSummary(root.fit) + (Model.checkSummary(root.check) ? "\n" + Model.checkSummary(root.check) : "")
               : root.previewReady
                 ? "With these settings: " + Model.fitSummary(root.preview).replace(/^Off target by/, "off target by") + ". Build to use them."
-                : (root.previewing && root.previewFailedKey !== root.selectionKey ? "Working out what these settings would do…" : "")
+                : (root.previewFailedKey === root.selectionKey ? root.previewError
+                  : (root.previewing ? "Working out what these settings would do…" : ""))
           }
 
           Row {

@@ -75,7 +75,13 @@ Write your own, or drop in a full config from elsewhere: any `devices:` block is
 1. **Pick a microphone.** A measurement microphone at your seat gives the best result; a laptop's built-in one works for correcting the speakers themselves. Bluetooth headset microphones and empty jacks are listed but can't be used.
 2. **Say where it is.** *Near the speakers* measures the speakers and keeps the room out (short windows). *Where I sit* measures what reaches you, room included, and also aligns both speakers in time and level to that spot.
 3. **Measure.** About 30 seconds: a quiet level probe, then three sweeps per speaker. Keep quiet. With the microphone at your seat, move it a little and press **Measure +1** a few times: positions are averaged, so the correction fixes what is true across your head's movements rather than one point in space.
-4. **Build.** Choose a sound (**Neutral**, **Warm**, or **Room**, a gentle in-room curve with more bass) and a correction (**Parametric EQ** or **FIR**). The strip under Sound shows the three targets, and the graph previews what the chosen combination would do before anything is saved. Build fits it, saves it as a preset named after the combination, such as *Calibrated EQ · Neutral*, and turns it on. Every combination gets its own preset, so build a few and switch between them, or back to *Flat*, in the preset list. Rebuilding a combination replaces only that one.
+4. **Build.** Choose a sound (**Neutral**, **Warm**, or **Room**, a gentle in-room curve with more bass) and a correction:
+
+   - **Parametric EQ**: up to ten smooth adjustments per speaker.
+   - **Detailed EQ**: the same tone correction in finer detail, as a FIR filter.
+   - **Room Correction**: Detailed EQ, plus the bass brought forward in time so it arrives with the rest of the sound, the way rePhase or Dirac do it. It adds 50 ms of delay, which is fine for music; video may need its audio offset adjusted.
+
+   The strip under Sound shows the three targets, and the graph previews what the chosen combination would do before anything is saved. Build fits it, saves it as a preset named after the combination, such as *Calibrated EQ · Neutral*, and turns it on. Every combination gets its own preset, so build a few and switch between them, or back to *Flat*, in the preset list. Rebuilding a combination replaces only that one.
 5. **Check.** Plays the sweeps through CamillaDSP and measures what actually comes out, against the target and against what was planned.
 
 ### The switches
@@ -118,7 +124,8 @@ miniDSP's format (the `"Sens Factor =…, SERNO: …"` header) and REW-style `.t
 - **Greedy plus joint refinement.** Each step tries the strongest few separate problems, then re-optimizes every filter's frequency, gain and Q together.
 - **Cross-validation.** A filter has to improve each repeat on its own, not only their average, or it is removed.
 - **Budget**: at most −12 dB per filter and +6 dB of boost, at most −15/+6 dB of total correction at any frequency, and a preamp that keeps the loudest corrected frequency 0.5 dB below full scale.
-- **FIR mode** turns the same smoothed correction into an 8192-tap minimum-phase filter per channel (CamillaDSP `Conv`). It fills dips only halfway and fades out past the measured band.
+- **Detailed EQ** turns the same smoothed correction into an 8192-tap minimum-phase filter per channel (CamillaDSP `Conv`). It fills dips only halfway and fades out past the measured band.
+- **Room Correction** is a 32768-tap mixed-phase filter: the Detailed EQ tone correction, plus a timing correction. Every sweep's group delay is kept, read through a short 4-cycle window so later room reflections stay out. The correction undoes how late the bass arrives compared with 500 Hz–1.5 kHz, counting the roll-off of the speaker, the protective high-pass and the tone correction itself. It works only from the knee up to 500 Hz, where a speaker's timing holds across the room. It moves the bass forward by at most one period and 45 ms, which keeps the ringing ahead of a note too short to hear, and it corrects less wherever the positions and repeats disagree. The whole filter is delayed by 50 ms so it stays causal. Measurements made before 1.1.0 have no timing; measure again to use it.
 
 Click **Presets**, **Calibrated sound** or **Calibrate with a microphone** to fold that section away; it then shows just the current preset, the switches that are on, or the microphone in use, and stays folded the next time you open the panel.
 

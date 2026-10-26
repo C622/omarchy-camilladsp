@@ -271,6 +271,105 @@ class SwitchesTest(unittest.TestCase):
         self.assertAlmostEqual(dsp.correction_level([corr, corr]), -4.0)
 
 
+# A bass-reflex speaker: a fourth-order roll-off at 45 Hz, which makes the
+# deep bass arrive late, and a box resonance.
+PORTED = [("Highpass", 45, 0, 0.707), ("Highpass", 45, 0, 0.707), ("Peaking", 900, 4, 3.0)]
+
+
+def ported_recording(played, reflections=((0.0015, 0.25),), shift_ms=0.0, seed=3):
+    rng = np.random.default_rng(seed)
+    sos = np.array([rbj_sos(k, f, g, q) for k, f, g, q in PORTED])
+    out = np.zeros(len(played) + 4321 + FS)
+    for ch in range(played.shape[1]):
+        y = signal.sosfilt(sos, played[:, ch].astype(np.float64)) * 0.5
+        d = 4321 + int((2.0 + 0.6 * ch) * FS / 1000)
+        out[d:d + len(y)] += y
+        for delay, gain in reflections:
+            r = d + int((delay + shift_ms / 1000) * FS)
+            out[r:r + len(y)] += gain * y
+    return out + rng.normal(0, 10 ** (-75 / 20), len(out))
+
+
+def chain_lag(taps, extra):
+    """Lateness in ms on GRID of the ported speaker, the given biquads, then taps."""
+    imp = np.zeros(1 << 17)
+    imp[0] = 1.0
+    for k, f, g, q in PORTED + extra:
+        imp = signal.sosfilt(rbj_sos(k, f, g, q)[None, :], imp)
+    if taps is not None:
+        imp = signal.fftconvolve(imp, taps.astype(np.float64))[:len(imp)]
+    f = np.fft.rfftfreq(len(imp), 1 / FS)
+    lag = dsp._group_delay(np.fft.rfft(imp), f)
+    return lag - np.mean(lag[(dsp.GRID >= 500) & (dsp.GRID <= 1500)])
+
+
+class TimingTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.played, cls.schedule = dsp.excitation(level_db=-12)
+        cls.channels = dsp.combine([dsp.analyze(ported_recording(cls.played), cls.played, cls.schedule)])
+
+    def test_measures_how_late_the_bass_arrives(self):
+        truth = chain_lag(None, [])
+        lag = self.channels[0]["delay"] - np.mean(self.channels[0]["delay"][(dsp.GRID >= 500) & (dsp.GRID <= 1500)])
+        for hz in (50, 80, 150, 300):
+            self.assertAlmostEqual(float(np.interp(hz, dsp.GRID, lag)), float(np.interp(hz, dsp.GRID, truth)),
+                                   delta=0.6, msg=f"{hz} Hz")
+
+    def test_room_correction_brings_the_bass_in_time(self):
+        taps, knee, corr, info = dsp.timing_correction(self.channels[0], dsp.target_curve("flat"))
+        self.assertEqual(len(taps), 32768)
+        self.assertTrue(np.isfinite(taps).all())
+        hp = [("Highpass", knee, 0, 0.707)]
+        before, after = chain_lag(None, hp), chain_lag(taps, hp)
+        band = (dsp.GRID >= 60) & (dsp.GRID <= 300)
+        self.assertGreater(np.max(before[band]), 5.0)
+        self.assertLess(np.max(np.abs(after[band])), 1.0)
+        self.assertLess(info["timing_after"], info["timing_before"] / 2)
+        # The midrange and treble are left alone, apart from the latency.
+        lag = dsp._group_delay(np.fft.rfft(taps.astype(np.float64), 1 << 17), np.fft.rfftfreq(1 << 17, 1 / FS))
+        treble = (dsp.GRID >= 1000) & (dsp.GRID <= 15000)
+        self.assertLess(np.max(np.abs(lag[treble] - dsp.TIMING_LATENCY * 1000)), 0.3)
+
+    def test_room_correction_rings_little_ahead_of_a_note(self):
+        taps, knee, _corr, _info = dsp.timing_correction(self.channels[0], dsp.target_curve("flat"))
+        # Nothing before the start, and little energy ahead of the main peak.
+        self.assertLess(np.sum(taps[:48] ** 2) / np.sum(taps ** 2), 1e-6)
+        peak = int(np.argmax(np.abs(taps)))
+        self.assertAlmostEqual(peak / FS, dsp.TIMING_LATENCY, delta=0.002)
+        self.assertLess(np.sum(taps[:peak - 48] ** 2) / np.sum(taps ** 2), 0.01)
+
+    def test_room_correction_tone_matches_detailed_eq(self):
+        taps, _knee, corr, _info = dsp.timing_correction(self.channels[0], dsp.target_curve("warm"))
+        n = 1 << 17
+        h = 20 * np.log10(np.abs(np.fft.rfft(taps.astype(np.float64), n)) + 1e-12)
+        f = np.fft.rfftfreq(n, 1 / FS)
+        for hz in (100, 900, 5000):
+            self.assertAlmostEqual(float(np.interp(hz, f, h)), float(np.interp(hz, dsp.GRID, corr)), delta=1.0)
+
+    def test_positions_that_disagree_are_corrected_less(self):
+        # Two spots with different late reflections disagree on the timing
+        # above the bass. Averaged, less is corrected there than for either
+        # spot alone, which would fit the correction to that one spot.
+        spots = [dsp.analyze(ported_recording(self.played, ((0.0015, 0.25), (0.004 + k * 0.003, 0.5)), seed=k),
+                             self.played, self.schedule) for k in range(2)]
+        mid = (dsp.GRID >= 120) & (dsp.GRID <= 400)
+
+        def moved(measurements):
+            info = dsp.timing_correction(dsp.combine(measurements)[0], dsp.target_curve("flat"))[3]
+            self.assertLessEqual(np.max(-info["shift"]), dsp.TIMING_LATENCY * 1000)
+            return np.mean(np.abs(info["shift"][mid]))
+
+        self.assertGreater(np.max(dsp.combine(spots)[0]["delay_spread"][mid]), 1.0)
+        self.assertLess(moved(spots), min(moved([spots[0]]), moved([spots[1]])))
+
+    def test_older_measurements_are_refused(self):
+        old = dict(self.channels[0])
+        del old["delay"], old["delay_spread"]
+        with self.assertRaises(dsp.MeasurementError):
+            dsp.timing_correction(old, dsp.target_curve("flat"))
+
+
 class SafetyTest(unittest.TestCase):
     def test_clipping_is_refused(self):
         played, schedule = dsp.excitation(level_db=-12)

@@ -70,7 +70,14 @@ const tests = {
     const fit = { mode: "peq", channels: [
       { error_before: 3, error_after: 1, filters: [1, 2, 3] }, { error_before: 2, error_after: 1.2, filters: [1, 2] }] }
     assert.strictEqual(M.fitSummary(fit), "Off target by 2.5 dB before, 1.1 dB planned (5 filters)")
-    assert.strictEqual(M.fitSummary({ ...fit, mode: "fir" }), "Off target by 2.5 dB before, 1.1 dB planned (FIR)")
+    assert.strictEqual(M.fitSummary({ ...fit, mode: "fir" }), "Off target by 2.5 dB before, 1.1 dB planned (Detailed EQ)")
+    const mixed = { mode: "mixed", channels: [
+      { error_before: 3, error_after: 1, timing_before: 8, timing_after: 3 },
+      { error_before: 2, error_after: 1.2, timing_before: 6, timing_after: 2 }] }
+    assert.strictEqual(M.fitSummary(mixed),
+      "Off target by 2.5 dB before, 1.1 dB planned (Room Correction); bass 7.0 ms late before, 2.5 ms planned")
+    assert.match(M.checkSummary({ channels: [{ error_before: 4, error_after: 1, plan_deviation: 0.3, timing_before: 9, timing_after: 1.5 }] }),
+      /plan; bass 9\.0 ms late before, 1\.5 ms with$/)
     assert.strictEqual(M.checkSummary({ channels: [{ error_before: 4, error_after: 1, plan_deviation: 0.3 }] }),
       "Checked here: 4.0 dB off target without, 1.0 dB with; the correction matches the plan")
     assert.match(M.checkSummary({ channels: [{ error_after: 1, plan_deviation: 3 }] }), /measure again/)
@@ -94,6 +101,7 @@ const tests = {
     assert.strictEqual(M.calibrationId("flat", "peq"), "80-cal-peq-flat")
     assert.strictEqual(M.calibrationId("room", "fir"), "80-cal-fir-room")
     assert.ok(M.isCalibrated("80-cal-fir-warm"))
+    assert.ok(M.isCalibrated("80-cal-mixed-flat"))
     assert.ok(M.isCalibrated("80-calibrated"))
     assert.ok(!M.isCalibrated("10-bass-boost"))
     assert.ok(!M.isCalibrated("80-calibrated-but-mine"))

@@ -153,8 +153,23 @@ function fitSummary(fit) {
   after /= fit.channels.length
   var filters = 0
   for (var j = 0; j < fit.channels.length; j++) filters += (fit.channels[j].filters || []).length
-  var kind = fit.mode === "fir" ? "FIR" : filters + " filters"
-  return "Off target by " + db(before) + " before, " + db(after) + " planned (" + kind + ")"
+  var kind = fit.mode === "fir" ? "Detailed EQ" : (fit.mode === "mixed" ? "Room Correction" : filters + " filters")
+  return "Off target by " + db(before) + " before, " + db(after) + " planned (" + kind + ")" + timingSummary(fit.channels, "planned")
+}
+
+// Room Correction also brings the bass forward: how late it arrives, as the
+// mean of the channels, before and after. Empty for the other corrections.
+function timingSummary(channels, word) {
+  var before = 0, after = 0, n = 0
+  for (var i = 0; i < channels.length; i++) {
+    var b = Number(channels[i].timing_before), a = Number(channels[i].timing_after)
+    if (channels[i].timing_before === undefined || !isFinite(b) || !isFinite(a)) continue
+    before += b
+    after += a
+    n++
+  }
+  if (n === 0) return ""
+  return "; bass " + (before / n).toFixed(1) + " ms late before, " + (after / n).toFixed(1) + " ms " + word
 }
 
 function checkSummary(check) {
@@ -173,6 +188,7 @@ function checkSummary(check) {
   var verdict = deviation < 1 ? "the correction matches the plan"
     : (deviation < 2 ? "the correction is close to the plan" : "the correction is off the plan, measure again")
   return "Checked here: " + db(before) + " off target without, " + db(after) + " with; " + verdict
+    + timingSummary(check.channels, "with")
 }
 
 // ---------- Response graph ----------
