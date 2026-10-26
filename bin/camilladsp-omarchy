@@ -438,28 +438,51 @@ install_dsp_unit() {
   local bin
   bin="$(camilladsp_bin)" || return 1
   sed -e "s|@CAMILLADSP@|$bin|" -e "s|@STATE_DIR@|$state_dir|g" \
-    "$plugin_dir/templates/$service" >"$unit_dir/$service"
+    "$plugin_dir/templates/$service" >"$unit_dir/$service.tmp"
+  if cmp -s "$unit_dir/$service.tmp" "$unit_dir/$service"; then
+    rm -f "$unit_dir/$service.tmp"
+  else
+    mv "$unit_dir/$service.tmp" "$unit_dir/$service"
+  fi
 }
 
 # Rewrite the installed units when they no longer match this copy of the
 # plugin: after an update changed a template, or when the plugin was added
 # again under another folder, which the loudness unit runs its tracker from.
+# Runs on every status, which the panel asks for when it loads and whenever
+# the service starts, so an update takes effect without touching anything.
 refresh_units() {
-  local before after started
+  local lock before started tracker target
+  is_setup || return 0
+  # The panel can ask for status twice at once; restart only once.
+  mkdir -p "$state_dir"
+  exec {lock}>"$state_dir/units.lock"
+  flock -w 10 "$lock" || { exec {lock}>&-; return 0; }
   before="$(cat "$unit_dir/$service" "$unit_dir/$sink_service" "$unit_dir/$loudness_service" 2>/dev/null | md5sum)"
   started="$(grep '^ExecStart=' "$unit_dir/$service" 2>/dev/null)"
-  install_dsp_unit || return 0
-  cmp -s "$plugin_dir/templates/$sink_service" "$unit_dir/$sink_service" ||
-    cp "$plugin_dir/templates/$sink_service" "$unit_dir/$sink_service"
-  [[ -f $unit_dir/$loudness_service ]] && install_loudness_unit
-  after="$(cat "$unit_dir/$service" "$unit_dir/$sink_service" "$unit_dir/$loudness_service" 2>/dev/null | md5sum)"
-  [[ $before == "$after" ]] || systemctl --user daemon-reload
-  # A CamillaDSP started another way keeps running that way until restarted.
-  # Earlier versions opened a websocket port, which every local account could
-  # reach; restart once to close it.
-  if [[ $started != "$(grep '^ExecStart=' "$unit_dir/$service" 2>/dev/null)" && $(service_state) == "active" ]]; then
-    systemctl --user restart "$service"
+  tracker="$(cat "$unit_dir/$loudness_service" 2>/dev/null)"
+  if install_dsp_unit; then
+    cmp -s "$plugin_dir/templates/$sink_service" "$unit_dir/$sink_service" ||
+      cp "$plugin_dir/templates/$sink_service" "$unit_dir/$sink_service"
+    [[ -f $unit_dir/$loudness_service ]] && install_loudness_unit
+    [[ $before == "$(cat "$unit_dir/$service" "$unit_dir/$sink_service" "$unit_dir/$loudness_service" 2>/dev/null | md5sum)" ]] || systemctl --user daemon-reload
+    # A CamillaDSP started from an older unit keeps running that way until
+    # restarted. Versions before 1.0.2 opened a websocket port that every local
+    # account could reach; restarting closes it.
+    if [[ $started != "$(grep '^ExecStart=' "$unit_dir/$service")" && $(service_state) == "active" ]]; then
+      systemctl --user restart "$service"
+      target="$(cat "$target_file" 2>/dev/null)"
+      if [[ -n $target ]]; then
+        pin_output "$target"
+        ensure_links "$target" >/dev/null 2>&1 || true
+      fi
+    fi
+    # Before 1.0.2 the tracker talked to that websocket.
+    if [[ $tracker != "$(cat "$unit_dir/$loudness_service" 2>/dev/null)" ]]; then
+      systemctl --user try-restart "$loudness_service" >/dev/null 2>&1
+    fi
   fi
+  exec {lock}>&-
 }
 
 # ---------- Commands ----------
@@ -578,7 +601,7 @@ cmd_preset() {
   target="$(cat "$target_file" 2>/dev/null)"
   [[ -n $target ]] || target="$(choose_target)" || fail "no audio output found"
 
-  is_setup && refresh_units
+  refresh_units
   render_config "$preset" "$target"
   printf '%s\n' "$preset" >"$preset_file"
 
@@ -628,6 +651,7 @@ status_json() {
     has_pipewire_backend "$bin" && pipewire=true
   fi
   is_setup && setup=true
+  refresh_units
   state="$(service_state)"
   default="$(default_sink)"
   target="$(cat "$target_file" 2>/dev/null)"

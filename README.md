@@ -146,7 +146,7 @@ See [Removing it](#removing-it) for taking it all out again.
 
 CamillaDSP's two PipeWire streams are only ever allowed to connect where they were sent. When it turns on, the plugin pins the output to the real device and checks the links. Anything that would let CamillaDSP hear its own output, a feedback loop, is disconnected. The WirePlumber rule stops WirePlumber falling back to another device if the sink or the output disappears, so a vanished device means silence rather than a loop.
 
-CamillaDSP runs without its websocket, so the plugin opens no network port. That websocket has no authentication, and any local account could reach it and load a config that writes to your files. Presets, switches and Loudness all work by writing the config and sending CamillaDSP a reload signal instead.
+CamillaDSP runs without its websocket, so the plugin opens no network port. That websocket has no authentication, and any local account could reach it and load a config that writes to your files. Presets, switches and Loudness all work by writing the config and sending CamillaDSP a reload signal instead. Versions before 1.0.2 did open one; after updating, CamillaDSP is restarted without it as soon as the panel loads.
 
 ## Development
 
