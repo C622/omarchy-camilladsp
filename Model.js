@@ -172,6 +172,17 @@ function timingSummary(channels, word) {
   return "; bass " + (before / n).toFixed(1) + " ms late before, " + (after / n).toFixed(1) + " ms " + word
 }
 
+// The check line under a built calibration: its result, or what to do to get
+// one. A check older than the build is of a filter that is gone.
+function checkNote(fit, check, playing) {
+  if (!fit) return ""
+  var current = check && check.channels && check.channels.length > 0 && !(check.time && fit.time && check.time < fit.time)
+  if (current) return checkSummary(check)
+  return playing === fit.preset
+    ? "Not checked yet. Press Check to measure what it does here."
+    : "Not checked yet. Select it under Presets, then press Check."
+}
+
 function checkSummary(check) {
   if (!check || !check.channels || check.channels.length === 0) return ""
   var before = 0, after = 0, deviation = 0
@@ -494,7 +505,7 @@ if (typeof module !== "undefined") {
     heroStatus: heroStatus, outputLabel: outputLabel, bypassReason: bypassReason,
     tooltip: tooltip, usableMics: usableMics, micInfo: micInfo, calibrationOptions: calibrationOptions, calibrationPath: calibrationPath,
     isMeasurementMic: isMeasurementMic, calibrationHint: calibrationHint, event: event, fitSummary: fitSummary,
-    checkSummary: checkSummary, curvePoints: curvePoints, smoothCurve: smoothCurve, micSummary: micSummary,
+    checkSummary: checkSummary, checkNote: checkNote, curvePoints: curvePoints, smoothCurve: smoothCurve, micSummary: micSummary,
     SWITCHES: SWITCHES, fitKnee: fitKnee, themeColors: themeColors, paletteColor: paletteColor, loudnessNote: loudnessNote,
     switchSummary: switchSummary, deepBassDescription: deepBassDescription,
     shelfDb: shelfDb, loudnessShare: loudnessShare, loudnessCurve: loudnessCurve, correctionLevel: correctionLevel,

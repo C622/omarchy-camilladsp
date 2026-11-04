@@ -923,7 +923,7 @@ Panel {
             Message {
               visible: !root.calibrating && text !== ""
               text: root.fitMatches
-                ? Model.fitSummary(root.fit) + (Model.checkSummary(root.check) ? "\n" + Model.checkSummary(root.check) : "")
+                ? Model.fitSummary(root.fit) + "\n" + Model.checkNote(root.fit, root.check, root.status ? root.status.preset : "")
                 : root.previewReady
                   ? "With these settings: " + Model.fitSummary(root.preview).replace(/^Off target by/, "off target by") + ". Build to use them."
                   : (root.previewFailedKey === root.selectionKey ? root.previewError

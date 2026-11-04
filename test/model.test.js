@@ -82,6 +82,13 @@ const tests = {
     assert.strictEqual(M.checkSummary({ channels: [{ error_before: 4, error_after: 1, plan_deviation: 0.3 }] }),
       "Checked here: 4.0 dB off target without, 1.0 dB with; the correction matches the plan")
     assert.match(M.checkSummary({ channels: [{ error_after: 1, plan_deviation: 3 }] }), /measure again/)
+    const built = { preset: "80-cal-mixed-room", time: "2026-11-04T17:50:26" }
+    const checked = { channels: [{ error_before: 4, error_after: 1, plan_deviation: 0.3 }], time: "2026-11-04T18:35:00" }
+    assert.match(M.checkNote(built, checked, "80-cal-mixed-room"), /^Checked here/)
+    assert.strictEqual(M.checkNote(built, null, "80-cal-mixed-room"), "Not checked yet. Press Check to measure what it does here.")
+    assert.match(M.checkNote(built, null, "00-flat"), /Select it under Presets/)
+    assert.match(M.checkNote(built, { ...checked, time: "2026-11-01T10:00:00" }, "80-cal-mixed-room"), /^Not checked yet/)
+    assert.strictEqual(M.checkNote(null, checked, ""), "")
   },
   "target curves match the calibrator's"() {
     // Reference values from target_curve() in lib/calibration_dsp.py.
