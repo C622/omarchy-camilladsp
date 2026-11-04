@@ -339,6 +339,17 @@ Panel {
     }
   }
 
+  // At login systemd reports CamillaDSP as starting while its relink step
+  // waits for the output, and the refresh the service sends comes during
+  // that wait too. Ask again until it has settled (or the first ask failed),
+  // so the bar icon lights up without opening the panel.
+  Timer {
+    interval: 1000
+    repeat: true
+    running: !root.status || root.status.service === "activating" || root.status.service === "reloading"
+    onTriggered: root.refresh()
+  }
+
   Process {
     id: actionProc
     stderr: StdioCollector {
