@@ -51,6 +51,7 @@ Usage: camilladsp-omarchy <command>
   on                     Route all audio through CamillaDSP (re-run to follow a new output)
   off                    Send audio straight to the real output again
   toggle                 Switch between on and off
+  relink                 Reconnect CamillaDSP to its output (the service runs this at login)
   preset <id|next|prev>  Apply a preset from $presets_dir
   presets                List presets as id<TAB>title
   status [--json]        Show what is running and where audio goes
@@ -437,7 +438,7 @@ sync_loudness_tracker() {
 install_dsp_unit() {
   local bin
   bin="$(camilladsp_bin)" || return 1
-  sed -e "s|@CAMILLADSP@|$bin|" -e "s|@STATE_DIR@|$state_dir|g" \
+  sed -e "s|@CAMILLADSP@|$bin|" -e "s|@STATE_DIR@|$state_dir|g" -e "s|@PLUGIN@|$plugin_dir|g" \
     "$plugin_dir/templates/$service" >"$unit_dir/$service.tmp"
   if cmp -s "$unit_dir/$service.tmp" "$unit_dir/$service"; then
     rm -f "$unit_dir/$service.tmp"
@@ -578,6 +579,30 @@ cmd_off() {
 
   refresh_shell
   echo "CamillaDSP is off"
+}
+
+# Run by the service each time CamillaDSP starts. At login that is before the
+# output device, the CamillaDSP sink's monitor or the PipeWire pulse server may
+# be there, so it waits for them (up to 30 s), then links, pins the output, and
+# makes the CamillaDSP sink the default again if WirePlumber restored another.
+# A device that only appears later is picked up by turning CamillaDSP on again.
+cmd_relink() {
+  local target tries=60
+
+  target="$(cat "$target_file" 2>/dev/null)"
+  [[ -n $target ]] || return 0
+  until sink_exists "$target" && sink_exists "$sink_name" &&
+    has_ports --input "$capture_node" && has_ports --output "$playback_node"; do
+    (( --tries > 0 )) || { echo "camilladsp-omarchy: $target did not appear; turn CamillaDSP on again once it is there" >&2; return 0; }
+    sleep 0.5
+  done
+
+  ensure_links "$target" || return 0
+  pin_output "$target"
+  [[ $(default_sink) == "$sink_name" ]] || set_default_output "$sink_name"
+  sleep 0.5
+  ensure_links "$target"
+  return 0
 }
 
 cmd_toggle() {
@@ -763,6 +788,7 @@ case ${1:-} in
   on) cmd_on ;;
   off) cmd_off ;;
   toggle) cmd_toggle ;;
+  relink) cmd_relink ;;
   preset) shift; cmd_preset "$@" ;;
   presets) cmd_presets ;;
   status) shift; cmd_status "$@" ;;
