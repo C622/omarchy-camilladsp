@@ -4,6 +4,10 @@ Documentation=https://github.com/HEnquist/camilladsp
 After=omarchy-camilladsp-sink.service
 BindsTo=omarchy-camilladsp-sink.service
 PartOf=pipewire.service
+# Logging out leaves PipeWire running but takes the output device away; at the
+# next login WirePlumber reconnects CamillaDSP's output into its own sink. So it
+# stops with the session and starts fresh at login, where relink connects it.
+PartOf=graphical-session.target
 
 [Service]
 Type=simple
